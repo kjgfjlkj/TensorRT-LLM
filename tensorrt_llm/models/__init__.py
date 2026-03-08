@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,7 +27,7 @@ from .commandr.model import CohereForCausalLM
 from .dbrx.config import DbrxConfig
 from .dbrx.model import DbrxForCausalLM
 from .deepseek_v1.model import DeepseekForCausalLM
-from .deepseek_v2.model import DeepseekV2ForCausalLM
+from .deepseek_v2.model import DeepseekV2ForCausalLM, DeepseekV2MTPForCausalLM
 from .dit.model import DiT
 from .eagle.model import EagleForCausalLM
 from .enc_dec.model import DecoderModel, EncoderModel, WhisperEncoder
@@ -79,6 +79,7 @@ __all__ = [
     'DeepseekForCausalLM',
     'FalconConfig',
     'DeepseekV2ForCausalLM',
+    'DeepseekV2MTPForCausalLM',
     'FalconForCausalLM',
     'FalconModel',
     'GPTConfig',
@@ -209,6 +210,9 @@ MODEL_MAP = {
     'DeepseekForCausalLM': DeepseekForCausalLM,
     'DeciLMForCausalLM': DeciLMForCausalLM,
     'DeepseekV2ForCausalLM': DeepseekV2ForCausalLM,
+    # DeepSeek R1 / V3: MTP speculative decoding on TRT backend
+    'DeepseekV3ForCausalLM': DeepseekV2MTPForCausalLM,
+    'DeepSeekR1ForCausalLM': DeepseekV2MTPForCausalLM,
     'EagleForCausalLM': EagleForCausalLM,
     'CohereForCausalLM': CohereForCausalLM,
     'MLLaMAModel': MLLaMAForCausalLM,  # For modelopt

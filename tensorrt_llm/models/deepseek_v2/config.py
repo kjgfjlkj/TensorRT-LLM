@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,6 +20,8 @@ from transformers import AutoConfig
 from ...layers import MoeConfig
 from ...mapping import Mapping
 from ..modeling_utils import PretrainedConfig, QuantConfig
+
+__all__ = ['DeepSeekV2Config', 'DeepseekV2MTPConfig']
 
 
 class DeepSeekV2Config(PretrainedConfig):
@@ -145,3 +147,65 @@ class DeepSeekV2Config(PretrainedConfig):
                    moe_layer_freq=hf_config.moe_layer_freq,
                    scoring_func=hf_config.scoring_func,
                    **kwargs)
+
+
+class DeepseekV2MTPConfig(DeepSeekV2Config):
+    """Config for DeepSeek R1/V3 with MTP speculative decoding (Eagle-style).
+
+    MTP uses a linear chain: N heads, each produces 1 draft token.
+    Each head is a full decoder layer with eh_proj hidden-state fusion.
+    This config exposes ``num_eagle_layers`` so the TRT builder can treat
+    MTP as Eagle without modification.
+    """
+
+    def __init__(self,
+                 *,
+                 num_nextn_predict_layers: int = 1,
+                 logits_dtype: str = 'float32',
+                 **kwargs):
+        self.num_nextn_predict_layers = num_nextn_predict_layers
+        self.logits_dtype = logits_dtype
+        super().__init__(**kwargs)
+
+    @property
+    def num_eagle_layers(self) -> int:
+        """Alias used by the TRT builder (SpeculativeDecodingMode.EAGLE)."""
+        return self.num_nextn_predict_layers
+
+    @property
+    def max_draft_len(self) -> int:
+        """Linear chain: one draft token per MTP head."""
+        return self.num_nextn_predict_layers
+
+    @property
+    def max_non_leaves_per_layer(self) -> int:
+        """Linear chain: exactly one non-leaf per layer."""
+        return 1
+
+    def to_dict(self):
+        output = super().to_dict()
+        output['num_nextn_predict_layers'] = self.num_nextn_predict_layers
+        output['logits_dtype'] = self.logits_dtype
+        return output
+
+    @classmethod
+    def from_hugging_face(
+            cls,
+            hf_config_or_dir: Union[str, 'transformers.PretrainedConfig'],
+            dtype: str = 'auto',
+            mapping: Optional[Mapping] = None,
+            quant_config: Optional[QuantConfig] = None,
+            num_nextn_predict_layers: int = 1,
+            **kwargs):
+        """Build config from a HuggingFace DeepSeek V2/V3/R1 checkpoint.
+
+        The HF config for V3/R1 is structurally identical to V2, so the base
+        ``from_hugging_face`` handles all field mapping.  We just add
+        ``num_nextn_predict_layers`` to kwargs so it flows into ``__init__``.
+        """
+        kwargs['num_nextn_predict_layers'] = num_nextn_predict_layers
+        return super().from_hugging_face(hf_config_or_dir,
+                                         dtype=dtype,
+                                         mapping=mapping,
+                                         quant_config=quant_config,
+                                         **kwargs)

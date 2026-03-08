@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,23 +14,30 @@
 # limitations under the License.
 
 import os
-from typing import Optional
+from collections import OrderedDict
+from typing import Optional, Union
 
+import numpy as np
+import tensorrt as trt
 import torch
 import transformers
 
+from ..._common import default_net
 from ..._utils import pad_vocab_size, torch_dtype_to_str
-from ...functional import Tensor, non_gated_version, recv, send
+from ...functional import (Tensor, cast, concat, gather_last_token_logits,
+                           index_select, non_gated_version, recv, send, shape)
 from ...layers import (MOE, AttentionMaskType, ColumnLinear,
                        DeepseekV2Attention, Embedding, GatedMLP, MoeConfig,
-                       PositionEmbeddingType, RmsNorm, SharedMoE)
+                       PositionEmbeddingType, RmsNorm, SharedMoE,
+                       SpecDecodingParams)
+from ...llmapi.kv_cache_type import KVCacheType
 from ...mapping import Mapping
-from ...module import Module
+from ...module import Module, ModuleList
 from ...plugin import init_all_reduce_helper
 from ..model_weights_loader import ModelWeightsLoader
 from ..modeling_utils import (DecoderLayerList, DecoderModelForCausalLM,
                               PretrainedConfig)
-from .config import DeepSeekV2Config
+from .config import DeepSeekV2Config, DeepseekV2MTPConfig
 from .convert import convert_deepseekv2, load_weights_from_hf_safetensors
 
 
@@ -359,3 +366,701 @@ class DeepseekV2ForCausalLM(DecoderModelForCausalLM):
                 sharding_dim=pretrained_config.embedding_sharding_dim)
             deepseek.load(weights)
             return deepseek
+
+
+# ---------------------------------------------------------------------------
+# MTP (Multi-Token Prediction) speculative decoding for DeepSeek R1/V3
+# ---------------------------------------------------------------------------
+
+def _import_eagle_plugins():
+    """Lazily import Eagle C++ plugin wrappers to avoid circular imports."""
+    from ..eagle.model import (TreeParams,
+                               eagle_draft_decoder_plugin,
+                               eagle_prepare_drafter_inputs_plugin,
+                               eagle_sample_and_accept_draft_plugin)
+    return (TreeParams, eagle_sample_and_accept_draft_plugin,
+            eagle_draft_decoder_plugin, eagle_prepare_drafter_inputs_plugin)
+
+
+class DeepseekV2MTPLayer(Module):
+    """Single MTP draft head for DeepSeek R1/V3 speculative decoding.
+
+    Architecture (per MTP head):
+        embed(input_ids)  →  enorm  ─┐
+                                      concat  →  eh_proj  →  h
+        prev_hidden_states →  hnorm  ─┘
+
+        h  →  input_layernorm  →  self_attn  →  +residual
+           →  post_layernorm   →  mlp        →  +residual
+           →  lm_head          →  logits
+    """
+
+    def __init__(self, config: DeepseekV2MTPConfig, layer_idx: int):
+        """
+        Args:
+            config: MTP config (same as base model config + MTP fields).
+            layer_idx: Absolute layer index for this MTP head
+                       (= base_num_hidden_layers + mtp_head_index).
+                       The PP-adjusted local_layer_idx passed to the attention
+                       is computed the same way as in DeepseekV2DecoderLayer.
+        """
+        super().__init__()
+        self.layer_idx = layer_idx
+
+        # ------------------------------------------------------------------
+        # MTP-specific: normalize and fuse embed + hidden
+        # ------------------------------------------------------------------
+        self.enorm = RmsNorm(normalized_shape=config.hidden_size,
+                             eps=config.norm_epsilon,
+                             dtype=config.dtype)
+        self.hnorm = RmsNorm(normalized_shape=config.hidden_size,
+                             eps=config.norm_epsilon,
+                             dtype=config.dtype)
+        # eh_proj: [2·H → H].  Not tensor-parallelized for simplicity.
+        self.eh_proj = ColumnLinear(2 * config.hidden_size,
+                                    config.hidden_size,
+                                    bias=False,
+                                    dtype=config.dtype,
+                                    tp_group=None,
+                                    tp_size=1,
+                                    gather_output=True)
+
+        # ------------------------------------------------------------------
+        # Shared vocab embedding (weights will be tied to base model)
+        # ------------------------------------------------------------------
+        self.vocab_embedding = Embedding(config.vocab_size,
+                                         config.hidden_size,
+                                         dtype=config.dtype)
+
+        # ------------------------------------------------------------------
+        # Standard decoder layer (MLA attention + dense MLP)
+        # ------------------------------------------------------------------
+        self.input_layernorm = RmsNorm(normalized_shape=config.hidden_size,
+                                       eps=config.norm_epsilon,
+                                       dtype=config.dtype)
+
+        # Compute PP-adjusted local index the same way as DeepseekV2DecoderLayer,
+        # using the augmented total (base + MTP) so that each MTP head gets a
+        # distinct KV-cache slot.
+        total_layers = config.num_hidden_layers + config.num_nextn_predict_layers
+        layers_range = config.mapping.pp_layers(total_layers)
+        local_layer_idx = layer_idx - layers_range[0]
+
+        self.attention = DeepseekV2Attention(
+            local_layer_idx=local_layer_idx,
+            hidden_size=config.hidden_size,
+            num_attention_heads=config.num_attention_heads,
+            q_lora_rank=config.q_lora_rank,
+            kv_lora_rank=config.kv_lora_rank,
+            qk_nope_head_dim=config.qk_nope_head_dim,
+            qk_rope_head_dim=config.qk_rope_head_dim,
+            v_head_dim=config.v_head_dim,
+            max_position_embeddings=config.max_position_embeddings,
+            eps=config.norm_epsilon,
+            attention_mask_type=AttentionMaskType.causal,
+            dtype=config.dtype,
+            position_embedding_type=PositionEmbeddingType.learned_absolute,
+            rotary_embedding_base=config.rotary_base,
+            rotary_embedding_scaling=None,
+            rotary_embedding_beta_fast=config.rotary_scaling['beta_fast'],
+            rotary_embedding_beta_slow=config.rotary_scaling['beta_slow'],
+            rotary_embedding_mscale=config.rotary_scaling['mscale'],
+            rotary_embedding_mscale_all_dim=config.
+            rotary_scaling['mscale_all_dim'],
+            rotary_embedding_origin_max_position=config.
+            rotary_scaling['original_max_position_embeddings'],
+            rotary_scaling=config.rotary_scaling,
+            tp_group=config.mapping.tp_group,
+            tp_size=config.mapping.tp_size,
+            tp_rank=config.mapping.tp_rank)
+
+        # MTP head always uses a dense MLP (not MoE)
+        self.post_layernorm = RmsNorm(normalized_shape=config.hidden_size,
+                                      eps=config.norm_epsilon,
+                                      dtype=config.dtype)
+        self.mlp = GatedMLP(
+            hidden_size=config.hidden_size,
+            ffn_hidden_size=config.intermediate_size,
+            hidden_act=non_gated_version(config.hidden_act),
+            dtype=config.dtype,
+            bias=False,
+            tp_group=config.mapping.tp_group,
+            tp_size=config.mapping.tp_size,
+            quant_mode=config.quant_mode)
+
+        # ------------------------------------------------------------------
+        # LM head (weights will be tied to base model lm_head)
+        # ------------------------------------------------------------------
+        vocab_size_padded = pad_vocab_size(config.vocab_size,
+                                           config.mapping.tp_size)
+        self.lm_head = ColumnLinear(config.hidden_size,
+                                    vocab_size_padded,
+                                    bias=False,
+                                    dtype=config.dtype,
+                                    tp_group=config.mapping.tp_group,
+                                    tp_size=config.mapping.tp_size,
+                                    gather_output=True)
+
+    def forward(self,
+                input_ids,
+                position_ids,
+                prev_hidden_states,
+                last_token_indices,
+                kv_cache_params=None,
+                attention_params=None,
+                spec_decoding_params=None,
+                logits_dtype='float32'):
+        """
+        Args:
+            input_ids: [num_tokens]  — token ids for this MTP step.
+            position_ids: [num_tokens] — position ids.
+            prev_hidden_states: [num_tokens, H] — hidden states from the
+                base model (step 0) or the previous MTP layer (step > 0).
+            last_token_indices: indices selecting the tokens whose logits
+                we emit (forwarded from eagle_prepare_drafter_inputs).
+            kv_cache_params, attention_params, spec_decoding_params:
+                same as a regular decoder layer.
+            logits_dtype: cast target for lm_head output.
+
+        Returns:
+            h_last: [num_selected, H] — hidden states at the selected
+                (last-token) positions, ready as prev_hidden_states for
+                the next MTP layer.
+            logits: [num_selected, vocab_size] — draft logits.
+        """
+        # 1. Embed and normalize
+        embed = self.vocab_embedding(input_ids)
+        x_embed = self.enorm(embed)
+        x_hidden = self.hnorm(prev_hidden_states)
+
+        # 2. Fuse embed + hidden and project to hidden_size
+        fused = concat([x_embed, x_hidden], dim=-1)
+        h = self.eh_proj(fused)
+
+        # 3. Decoder layer
+        residual = h
+        h = self.input_layernorm(h)
+        attn_out = self.attention(
+            hidden_states=h,
+            use_cache=True,
+            spec_decoding_params=spec_decoding_params,
+            kv_cache_params=kv_cache_params,
+            attention_params=attention_params)
+        if isinstance(attn_out, tuple):
+            attn_out = attn_out[0]  # discard KV-cache presents
+        h = residual + attn_out
+
+        residual = h
+        h = self.post_layernorm(h)
+        h = self.mlp(h)
+        h = residual + h
+
+        # 4. Draft logits (only for selected positions)
+        h_last = gather_last_token_logits(
+            h, last_token_indices,
+            default_net().plugin_config.remove_input_padding)
+        logits = cast(self.lm_head(h_last), logits_dtype)
+        # Return h_last (gathered, selected tokens only) so that
+        # _mtp_fwd_helper can pass the correct-sized tensor as
+        # prev_hidden_states to subsequent MTP layers.  Returning the full
+        # h would grow the concat buffer incorrectly for num_mtp_layers > 1.
+        return h_last, logits
+
+
+class DeepseekV2MTPForCausalLM(DeepseekV2ForCausalLM):
+    """DeepSeek R1/V3 with MTP speculative decoding on the TRT backend.
+
+    Inherits the base model from ``DeepseekV2ForCausalLM`` and adds
+    ``num_nextn_predict_layers`` MTP draft heads.  Eagle C++ plugins are
+    reused for token acceptance and draft token decoding; only the
+    hidden-state fusion (``eh_proj``) is novel Python/TRT logic.
+    """
+
+    config_class = DeepseekV2MTPConfig
+
+    def __init__(self, config: DeepseekV2MTPConfig):
+        super().__init__(config)
+        # Exposed for the TRT builder (checks hasattr(model.config, 'num_eagle_layers'))
+        self._num_mtp_layers = config.num_nextn_predict_layers
+        self._max_draft_len = config.num_nextn_predict_layers  # linear chain
+        self._max_non_leaves_per_layer = 1  # linear chain
+
+        if self.mapping.is_last_pp_rank():
+            # Each MTP head's attention uses a KV-cache slot starting at
+            # base_num_hidden_layers.
+            self.mtp_layers = ModuleList([
+                DeepseekV2MTPLayer(
+                    config,
+                    layer_idx=config.num_hidden_layers + i)
+                for i in range(config.num_nextn_predict_layers)
+            ])
+
+    # ------------------------------------------------------------------
+    # Internal helpers (mirrors EagleForCausalLM._prepare_drafter_inputs)
+    # ------------------------------------------------------------------
+
+    def _prepare_drafter_inputs(
+            self, layer_idx, input_ids, chunked_context_next_tokens,
+            accepted_token_ids, accepted_lens, accepted_path_ids,
+            next_draft_tokens, next_draft_lens, next_draft_paths,
+            prev_draft_lens, prev_draft_paths, input_attention_params,
+            input_kv_cache_params, hidden_states,
+            host_ctx_eagle_net_request_types,
+            host_ctx_eagle_net_context_lengths,
+            host_ctx_eagle_net_past_key_value_lengths,
+            host_gen_eagle_net_request_types,
+            host_gen_eagle_net_context_lengths,
+            host_gen_eagle_net_past_key_value_lengths,
+            hidden_size_batch_level_starts, input_gen_tokens,
+            input_spec_decoding_generation_lengths, spec_decoding_use):
+
+        (_, _, eagle_draft_decoder_plugin,
+         eagle_prepare_drafter_inputs_plugin) = _import_eagle_plugins()
+
+        drafter_inputs = eagle_prepare_drafter_inputs_plugin(
+            layer_idx, self._num_mtp_layers, self._max_non_leaves_per_layer,
+            input_attention_params, input_ids, chunked_context_next_tokens,
+            accepted_token_ids, accepted_lens, accepted_path_ids,
+            next_draft_tokens, next_draft_lens, next_draft_paths,
+            prev_draft_lens, prev_draft_paths, hidden_size_batch_level_starts,
+            input_gen_tokens, input_spec_decoding_generation_lengths)
+
+        (sequence_length, context_lengths,
+         spec_decoding_generation_lengths, spec_decoding_position_offsets,
+         spec_decoding_packed_mask, output_ids, position_ids,
+         hidden_states_indices, last_token_indices, num_last_token_indices,
+         out_hidden_size_batch_level_starts) = drafter_inputs
+
+        attention_params = input_attention_params
+        kv_cache_params = input_kv_cache_params
+        attention_params.sequence_length = sequence_length
+        attention_params.context_lengths = context_lengths
+
+        if layer_idx == 0:
+            attention_params.host_request_types = \
+                host_ctx_eagle_net_request_types
+            attention_params.host_context_lengths = \
+                host_ctx_eagle_net_context_lengths
+            kv_cache_params.host_past_key_value_lengths = \
+                host_ctx_eagle_net_past_key_value_lengths
+        else:
+            attention_params.host_request_types = \
+                host_gen_eagle_net_request_types
+            attention_params.host_context_lengths = \
+                host_gen_eagle_net_context_lengths
+            kv_cache_params.host_past_key_value_lengths = \
+                host_gen_eagle_net_past_key_value_lengths
+
+        spec_decoding_params = None
+        if layer_idx > 0:
+            spec_decoding_params = SpecDecodingParams(
+                True, self._max_draft_len,
+                spec_decoding_generation_lengths,
+                spec_decoding_position_offsets,
+                spec_decoding_packed_mask,
+                spec_decoding_use)
+
+        # Select hidden states at the positions required by the drafter
+        hidden_states = index_select(hidden_states, 0, hidden_states_indices)
+        hidden_states = hidden_states.view(
+            concat([shape(hidden_states_indices, 0),
+                    shape(hidden_states, 1)]),
+            zero_is_placeholder=False)
+
+        net_inputs = {
+            'input_ids': output_ids,
+            'position_ids': position_ids,
+            'last_token_indices': last_token_indices,
+            'attention_params': attention_params,
+            'kv_cache_params': kv_cache_params,
+            'spec_decoding_params': spec_decoding_params,
+            'hidden_states': hidden_states,
+        }
+        return net_inputs, out_hidden_size_batch_level_starts, \
+            num_last_token_indices
+
+    def _mtp_fwd_helper(self, lm_logits, hidden_states, *args, **kwargs):
+        """Accept previous draft tokens, then generate new draft tokens.
+
+        Mirrors ``EagleForCausalLM._eagle_fwd_helper`` but runs MTP layers
+        (with ``eh_proj`` fusion) instead of separate LLaMA draft models.
+        """
+        (TreeParams, eagle_sample_and_accept_draft_plugin,
+         eagle_draft_decoder_plugin, _) = _import_eagle_plugins()
+
+        input_tree_params = kwargs['tree_params']
+        draft_tokens = kwargs['draft_tokens']
+        draft_lens = kwargs['draft_lens']
+        eagle_temperature = kwargs['eagle_temperature']
+        rand_data_validation = kwargs['rand_data_validation']
+        posterior_alpha = kwargs['posterior_alpha']
+        posterior_threshold = kwargs['posterior_threshold']
+        input_ids = kwargs['input_ids']
+        chunked_context_next_tokens = kwargs['chunked_context_next_tokens']
+        host_ctx_eagle_net_request_types = \
+            kwargs['host_ctx_eagle_net_request_types']
+        host_ctx_eagle_net_context_lengths = \
+            kwargs['host_ctx_eagle_net_context_lengths']
+        host_ctx_eagle_net_past_key_value_lengths = \
+            kwargs['host_ctx_eagle_net_past_key_value_lengths']
+        host_gen_eagle_net_request_types = \
+            kwargs['host_gen_eagle_net_request_types']
+        host_gen_eagle_net_context_lengths = \
+            kwargs['host_gen_eagle_net_context_lengths']
+        host_gen_eagle_net_past_key_value_lengths = \
+            kwargs['host_gen_eagle_net_past_key_value_lengths']
+        input_gen_tokens = kwargs['input_gen_tokens']
+        greedy_sampling = kwargs['greedy_sampling']
+        use_dynamic_tree = kwargs['use_dynamic_tree']
+        dynamic_tree_max_topK = kwargs['dynamic_tree_max_topK']
+        prev_scores = kwargs['prev_scores']
+        current_expand_indices = kwargs['current_expand_indices']
+        all_layers_scores = kwargs['all_layers_scores']
+        all_layers_draft_token_ids = kwargs['all_layers_draft_token_ids']
+        all_layers_draft_token_ids_predecessor = \
+            kwargs['all_layers_draft_token_ids_predecessor']
+
+        # ------------------------------------------------------------------
+        # Step 1: Accept draft tokens from previous iteration
+        # ------------------------------------------------------------------
+        output = eagle_sample_and_accept_draft_plugin(
+            lm_logits, draft_tokens, draft_lens, eagle_temperature,
+            rand_data_validation, posterior_alpha, posterior_threshold,
+            input_tree_params, greedy_sampling, use_dynamic_tree)
+        (accepted_tokens, num_accepted_tokens, accepted_paths,
+         next_draft_tokens, next_draft_lens, next_draft_paths,
+         hidden_size_batch_level_starts) = output
+
+        attention_params = kwargs['attention_params']
+        kv_cache_params = kwargs['kv_cache_params']
+        spec_decoding_params = kwargs['spec_decoding_params']
+
+        input_hidden_states = hidden_states
+
+        # ------------------------------------------------------------------
+        # Step 2: Run each MTP head to generate the next draft tokens
+        # ------------------------------------------------------------------
+        for li in range(self._num_mtp_layers):
+            drafter_inputs, hidden_size_batch_level_starts, \
+                num_last_token_indices = self._prepare_drafter_inputs(
+                    layer_idx=li,
+                    input_ids=input_ids,
+                    chunked_context_next_tokens=chunked_context_next_tokens,
+                    accepted_token_ids=accepted_tokens,
+                    accepted_lens=num_accepted_tokens,
+                    accepted_path_ids=accepted_paths,
+                    next_draft_tokens=next_draft_tokens,
+                    next_draft_lens=next_draft_lens,
+                    next_draft_paths=next_draft_paths,
+                    prev_draft_lens=draft_lens,
+                    prev_draft_paths=input_tree_params.paths,
+                    input_attention_params=attention_params,
+                    input_kv_cache_params=kv_cache_params,
+                    hidden_states=input_hidden_states,
+                    host_ctx_eagle_net_request_types=
+                    host_ctx_eagle_net_request_types,
+                    host_ctx_eagle_net_context_lengths=
+                    host_ctx_eagle_net_context_lengths,
+                    host_ctx_eagle_net_past_key_value_lengths=
+                    host_ctx_eagle_net_past_key_value_lengths,
+                    host_gen_eagle_net_request_types=
+                    host_gen_eagle_net_request_types,
+                    host_gen_eagle_net_context_lengths=
+                    host_gen_eagle_net_context_lengths,
+                    host_gen_eagle_net_past_key_value_lengths=
+                    host_gen_eagle_net_past_key_value_lengths,
+                    hidden_size_batch_level_starts=
+                    hidden_size_batch_level_starts,
+                    input_gen_tokens=input_gen_tokens,
+                    input_spec_decoding_generation_lengths=
+                    spec_decoding_params.spec_decoding_generation_lengths,
+                    spec_decoding_use=spec_decoding_params.spec_decoding_use)
+
+            # Run MTP layer: eh_proj fusion + decoder
+            h_out, draft_logits = self.mtp_layers[li](
+                input_ids=drafter_inputs['input_ids'],
+                position_ids=drafter_inputs['position_ids'],
+                prev_hidden_states=drafter_inputs['hidden_states'],
+                last_token_indices=drafter_inputs['last_token_indices'],
+                kv_cache_params=drafter_inputs['kv_cache_params'],
+                attention_params=drafter_inputs['attention_params'],
+                spec_decoding_params=drafter_inputs['spec_decoding_params'],
+                logits_dtype=self.config.logits_dtype)
+
+            # Decode draft tokens via Eagle plugin
+            top_k_sampling = True  # TODO: make configurable
+            (next_draft_tokens, next_draft_lens, next_draft_paths,
+             prev_scores, current_expand_indices,
+             all_layers_scores, all_layers_draft_token_ids,
+             all_layers_draft_token_ids_predecessor) = \
+                eagle_draft_decoder_plugin(
+                    li, self._num_mtp_layers, top_k_sampling,
+                    draft_logits, num_last_token_indices, next_draft_paths,
+                    use_dynamic_tree, dynamic_tree_max_topK,
+                    next_draft_tokens, next_draft_lens,
+                    prev_scores, current_expand_indices,
+                    all_layers_scores, all_layers_draft_token_ids,
+                    all_layers_draft_token_ids_predecessor)
+
+            # Update hidden-state buffer for the next MTP layer
+            if li == 0:
+                eagle_net_0_sequence_length = \
+                    drafter_inputs['attention_params'].sequence_length
+                input_hidden_states = h_out
+            else:
+                input_hidden_states = concat([input_hidden_states, h_out])
+
+            kv_cache_params = drafter_inputs['kv_cache_params']
+            attention_params = drafter_inputs['attention_params']
+            attention_params.context_lengths = eagle_net_0_sequence_length
+            attention_params.sequence_length = eagle_net_0_sequence_length
+
+        # Mark speculative-decoding outputs
+        accepted_tokens.mark_output('accepted_tokens')
+        num_accepted_tokens.mark_output('num_accepted_tokens')
+        accepted_paths.mark_output('accepted_paths')
+        next_draft_tokens.mark_output('next_draft_tokens')
+        next_draft_lens.mark_output('next_draft_lens')
+        next_draft_paths.mark_output('next_draft_paths')
+
+        return next_draft_tokens
+
+    # ------------------------------------------------------------------
+    # forward / prepare_inputs
+    # ------------------------------------------------------------------
+
+    # Extra kwargs consumed by MTP logic; everything else goes to the base
+    # model forward.
+    _MTP_EXTRA_ARGS = [
+        'draft_tokens', 'draft_lens', 'eagle_temperature',
+        'rand_data_validation', 'tree_params',
+        'host_ctx_eagle_net_request_types',
+        'host_ctx_eagle_net_context_lengths',
+        'host_ctx_eagle_net_past_key_value_lengths',
+        'host_gen_eagle_net_request_types',
+        'host_gen_eagle_net_context_lengths',
+        'host_gen_eagle_net_past_key_value_lengths',
+        'input_gen_tokens', 'chunked_context_next_tokens',
+        'posterior_alpha', 'posterior_threshold', 'greedy_sampling',
+        'use_dynamic_tree', 'dynamic_tree_max_topK',
+        'prev_scores', 'current_expand_indices',
+        'all_layers_scores', 'all_layers_draft_token_ids',
+        'all_layers_draft_token_ids_predecessor',
+    ]
+
+    def forward(self, *args, **kwargs):
+        extra = set(self._MTP_EXTRA_ARGS)
+        base_kwargs = {k: v for k, v in kwargs.items() if k not in extra}
+
+        # Base model forward → (lm_logits, gathered_hidden, all_hidden)
+        # on the last PP rank, or hidden_states on other ranks.
+        result = super().forward(*args, **base_kwargs)
+
+        if self.mapping.is_last_pp_rank():
+            # Remove 'hidden_states' from kwargs to avoid confusion with
+            # the PP-send path (mirrors Eagle implementation).
+            kwargs = {k: v for k, v in kwargs.items() if k != 'hidden_states'}
+
+        if self.mapping.is_last_pp_rank():
+            assert kwargs['use_cache'] and \
+                default_net().plugin_config.paged_kv_cache, \
+                'DeepseekV2MTPForCausalLM requires use_cache=True and paged KV cache'
+            lm_logits, _gathered_hidden, all_hidden_states = result
+            lm_logits = cast(lm_logits, self.config.logits_dtype)
+            next_draft_tokens = self._mtp_fwd_helper(
+                lm_logits, all_hidden_states, *args, **kwargs)
+            return next_draft_tokens
+        else:
+            result.mark_output('hidden_states_output', self.config.dtype)
+            return result
+
+    def prepare_inputs(self, *args, **kwargs):
+        from ..generation_mixin import GenerationMixin
+
+        kwargs['speculative_decoding_draft_tokens_external'] = False
+        kwargs['max_draft_len'] = self._max_draft_len
+        kwargs['spec_decoding_is_generation_length_variable'] = True
+        # Allocate KV-cache slots for base layers + MTP layers (1 per head)
+        kwargs['num_hidden_layers'] = (self.config.num_hidden_layers +
+                                       self._num_mtp_layers)
+
+        inputs = super().prepare_inputs(*args, **kwargs)
+
+        assert inputs.get('spec_decoding_params') is not None, (
+            'prepare_inputs must be called with speculative-decoding settings')
+
+        # ------------------------------------------------------------------
+        # Add Eagle-compatible input tensors (same as EagleForCausalLM)
+        # ------------------------------------------------------------------
+        remove_input_padding = \
+            default_net().plugin_config.remove_input_padding
+        use_gpt_attention_plugin = \
+            default_net().plugin_config.gpt_attention_plugin
+        use_gemm_plugin = default_net().plugin_config.gemm_plugin
+        paged_kv_cache = default_net().plugin_config.paged_kv_cache
+        multiple_profiles = default_net().plugin_config.multiple_profiles
+        max_batch_size = kwargs['max_batch_size']
+
+        kv_cache_type = (KVCacheType.PAGED
+                         if paged_kv_cache else KVCacheType.CONTINUOUS)
+        enable_ctx_gen_opt_profiles = GenerationMixin.has_ctx_gen_opt_profiles(
+            use_gpt_attention_plugin=use_gpt_attention_plugin,
+            use_gemm_plugin=use_gemm_plugin,
+            remove_input_padding=remove_input_padding,
+            kv_cache_type=kv_cache_type)
+
+        _, ranges = GenerationMixin.get_profiles_ranges(
+            max_batch_size=max_batch_size,
+            max_beam_width=kwargs['max_beam_width'],
+            max_input_len=kwargs['max_input_len'],
+            max_num_tokens=kwargs['max_num_tokens'],
+            max_draft_len=self._max_draft_len,
+            opt_batch_size=kwargs.get('opt_batch_size'),
+            opt_num_tokens=kwargs.get('opt_num_tokens'),
+            enable_ctx_gen_opt_profiles=enable_ctx_gen_opt_profiles,
+            multiple_profiles=multiple_profiles,
+            kv_cache_type=kv_cache_type)
+
+        bb_range = ranges['bb_range']
+        gt_range = GenerationMixin.default_range(
+            max_batch_size * (self._max_draft_len + 1), min_range=0,
+            opt_offset=1)
+
+        draft_len_range = [self._max_draft_len] * len(bb_range)
+        decoding_len_range = [self._max_draft_len + 1] * len(bb_range)
+        path_len_range = [self._num_mtp_layers + 1] * len(bb_range)
+        gen_tokens_range = [gt_range] * len(bb_range)
+        num_eagle_layers_range = [self._num_mtp_layers] * len(bb_range)
+        draft_len_sq_range = [
+            self._max_draft_len * self._max_draft_len] * len(bb_range)
+
+        draft_tokens = Tensor(
+            name='draft_tokens', dtype=trt.int32,
+            shape=[-1, self._max_draft_len],
+            dim_range=OrderedDict([('batch_size', bb_range),
+                                   ('draft_len', draft_len_range)]))
+        draft_lens = Tensor(
+            name='draft_lens', dtype=trt.int32, shape=[-1],
+            dim_range=OrderedDict([('batch_size', bb_range)]))
+        eagle_temperature = Tensor(
+            name='eagle_temperature', dtype=trt.float32, shape=[-1],
+            dim_range=OrderedDict([('batch_size', bb_range)]))
+        rand_data_validation = Tensor(
+            name='rand_data_validation', dtype=trt.float32,
+            shape=[-1, self._max_draft_len + 1],
+            dim_range=OrderedDict([('batch_size', bb_range),
+                                   ('decoding_len', decoding_len_range)]))
+        posterior_alpha = Tensor(
+            name='posterior_alpha', dtype=trt.float32, shape=[-1],
+            dim_range=OrderedDict([('batch_size', bb_range)]))
+        posterior_threshold = Tensor(
+            name='posterior_threshold', dtype=trt.float32, shape=[-1],
+            dim_range=OrderedDict([('batch_size', bb_range)]))
+        draft_paths = Tensor(
+            name='draft_paths', dtype=trt.int32,
+            shape=[-1, self._max_draft_len + 1, self._num_mtp_layers + 1],
+            dim_range=OrderedDict([('batch_size', bb_range),
+                                   ('decoding_len', decoding_len_range),
+                                   ('path_len', path_len_range)]))
+
+        host_ctx_eagle_net_request_types = Tensor(
+            name='host_ctx_eagle_net_request_types', dtype=trt.int32,
+            shape=[-1], dim_range=OrderedDict([('batch_size', bb_range)]))
+        host_ctx_eagle_net_context_lengths = Tensor(
+            name='host_ctx_eagle_net_context_lengths', dtype=trt.int32,
+            shape=[-1], dim_range=OrderedDict([('batch_size', bb_range)]))
+        host_ctx_eagle_net_past_key_value_lengths = Tensor(
+            name='host_ctx_eagle_net_past_key_value_lengths', dtype=trt.int32,
+            shape=[-1], dim_range=OrderedDict([('batch_size', bb_range)]))
+        host_gen_eagle_net_request_types = Tensor(
+            name='host_gen_eagle_net_request_types', dtype=trt.int32,
+            shape=[-1], dim_range=OrderedDict([('batch_size', bb_range)]))
+        host_gen_eagle_net_context_lengths = Tensor(
+            name='host_gen_eagle_net_context_lengths', dtype=trt.int32,
+            shape=[-1], dim_range=OrderedDict([('batch_size', bb_range)]))
+        host_gen_eagle_net_past_key_value_lengths = Tensor(
+            name='host_gen_eagle_net_past_key_value_lengths', dtype=trt.int32,
+            shape=[-1], dim_range=OrderedDict([('batch_size', bb_range)]))
+
+        input_gen_tokens = Tensor(
+            name='input_gen_tokens', dtype=trt.int32, shape=[-1],
+            dim_range=OrderedDict([('gen_tokens', gen_tokens_range)]))
+        chunked_context_next_tokens = Tensor(
+            name='chunked_context_next_tokens', dtype=trt.int32, shape=[-1],
+            dim_range=OrderedDict([('batch_size', bb_range)]))
+        greedy_sampling = Tensor(
+            name='greedy_sampling', dtype=trt.int32, shape=[1])
+        use_dynamic_tree = Tensor(
+            name='use_dynamic_tree', dtype=trt.int32, shape=[1])
+        dynamic_tree_max_topK = Tensor(
+            name='dynamic_tree_max_topK', dtype=trt.int32, shape=[1])
+        prev_scores = Tensor(
+            name='prev_scores', dtype=trt.float32,
+            shape=[-1, self._max_draft_len],
+            dim_range=OrderedDict([('batch_size', bb_range),
+                                   ('draft_len', draft_len_range)]))
+        current_expand_indices = Tensor(
+            name='current_expand_indices', dtype=trt.int32,
+            shape=[-1, self._max_draft_len],
+            dim_range=OrderedDict([('batch_size', bb_range),
+                                   ('draft_len', draft_len_range)]))
+        all_layers_scores = Tensor(
+            name='all_layers_scores', dtype=trt.float32,
+            shape=[-1, self._num_mtp_layers,
+                   self._max_draft_len * self._max_draft_len],
+            dim_range=OrderedDict([
+                ('batch_size', bb_range),
+                ('num_eagle_layers', num_eagle_layers_range),
+                ('draft_len_square', draft_len_sq_range)]))
+        all_layers_draft_token_ids = Tensor(
+            name='all_layers_draft_token_ids', dtype=trt.int32,
+            shape=[-1, self._num_mtp_layers,
+                   self._max_draft_len * self._max_draft_len],
+            dim_range=OrderedDict([
+                ('batch_size', bb_range),
+                ('num_eagle_layers', num_eagle_layers_range),
+                ('draft_len_square', draft_len_sq_range)]))
+        all_layers_draft_token_ids_predecessor = Tensor(
+            name='all_layers_draft_token_ids_predecessor', dtype=trt.int32,
+            shape=[-1, self._num_mtp_layers,
+                   self._max_draft_len * self._max_draft_len],
+            dim_range=OrderedDict([
+                ('batch_size', bb_range),
+                ('num_eagle_layers', num_eagle_layers_range),
+                ('draft_len_square', draft_len_sq_range)]))
+
+        from ..eagle.model import TreeParams
+        tree_params = TreeParams(paths=draft_paths)
+
+        inputs['draft_tokens'] = draft_tokens
+        inputs['draft_lens'] = draft_lens
+        inputs['eagle_temperature'] = eagle_temperature
+        inputs['posterior_alpha'] = posterior_alpha
+        inputs['posterior_threshold'] = posterior_threshold
+        inputs['rand_data_validation'] = rand_data_validation
+        inputs['tree_params'] = tree_params
+        inputs['host_ctx_eagle_net_request_types'] = \
+            host_ctx_eagle_net_request_types
+        inputs['host_ctx_eagle_net_context_lengths'] = \
+            host_ctx_eagle_net_context_lengths
+        inputs['host_ctx_eagle_net_past_key_value_lengths'] = \
+            host_ctx_eagle_net_past_key_value_lengths
+        inputs['host_gen_eagle_net_request_types'] = \
+            host_gen_eagle_net_request_types
+        inputs['host_gen_eagle_net_context_lengths'] = \
+            host_gen_eagle_net_context_lengths
+        inputs['host_gen_eagle_net_past_key_value_lengths'] = \
+            host_gen_eagle_net_past_key_value_lengths
+        inputs['input_gen_tokens'] = input_gen_tokens
+        inputs['chunked_context_next_tokens'] = chunked_context_next_tokens
+        inputs['greedy_sampling'] = greedy_sampling
+        inputs['use_dynamic_tree'] = use_dynamic_tree
+        inputs['dynamic_tree_max_topK'] = dynamic_tree_max_topK
+        inputs['prev_scores'] = prev_scores
+        inputs['current_expand_indices'] = current_expand_indices
+        inputs['all_layers_scores'] = all_layers_scores
+        inputs['all_layers_draft_token_ids'] = all_layers_draft_token_ids
+        inputs['all_layers_draft_token_ids_predecessor'] = \
+            all_layers_draft_token_ids_predecessor
+
+        return inputs
