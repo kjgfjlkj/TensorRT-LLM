@@ -382,218 +382,161 @@ def _import_eagle_plugins():
             eagle_draft_decoder_plugin, eagle_prepare_drafter_inputs_plugin)
 
 
-class DeepseekV2MTPLayer(Module):
-    """Single MTP draft head for DeepSeek R1/V3 speculative decoding.
-
-    Architecture (per MTP head):
-        embed(input_ids)  →  enorm  ─┐
-                                      concat  →  eh_proj  →  h
-        prev_hidden_states →  hnorm  ─┘
-
-        h  →  input_layernorm  →  self_attn  →  +residual
-           →  post_layernorm   →  mlp        →  +residual
-           →  lm_head          →  logits
-    """
-
-    def __init__(self, config: DeepseekV2MTPConfig, layer_idx: int):
-        """
-        Args:
-            config: MTP config (same as base model config + MTP fields).
-            layer_idx: Absolute layer index for this MTP head
-                       (= base_num_hidden_layers + mtp_head_index).
-                       The PP-adjusted local_layer_idx passed to the attention
-                       is computed the same way as in DeepseekV2DecoderLayer.
-        """
-        super().__init__()
-        self.layer_idx = layer_idx
-
-        # ------------------------------------------------------------------
-        # MTP-specific: normalize and fuse embed + hidden
-        # ------------------------------------------------------------------
-        self.enorm = RmsNorm(normalized_shape=config.hidden_size,
-                             eps=config.norm_epsilon,
-                             dtype=config.dtype)
-        self.hnorm = RmsNorm(normalized_shape=config.hidden_size,
-                             eps=config.norm_epsilon,
-                             dtype=config.dtype)
-        # eh_proj: [2·H → H].  Not tensor-parallelized for simplicity.
-        self.eh_proj = ColumnLinear(2 * config.hidden_size,
-                                    config.hidden_size,
-                                    bias=False,
-                                    dtype=config.dtype,
-                                    tp_group=None,
-                                    tp_size=1,
-                                    gather_output=True)
-
-        # ------------------------------------------------------------------
-        # Shared vocab embedding (weights will be tied to base model)
-        # ------------------------------------------------------------------
-        self.vocab_embedding = Embedding(config.vocab_size,
-                                         config.hidden_size,
-                                         dtype=config.dtype)
-
-        # ------------------------------------------------------------------
-        # Standard decoder layer (MLA attention + dense MLP)
-        # ------------------------------------------------------------------
-        self.input_layernorm = RmsNorm(normalized_shape=config.hidden_size,
-                                       eps=config.norm_epsilon,
-                                       dtype=config.dtype)
-
-        # Compute PP-adjusted local index the same way as DeepseekV2DecoderLayer,
-        # using the augmented total (base + MTP) so that each MTP head gets a
-        # distinct KV-cache slot.
-        total_layers = config.num_hidden_layers + config.num_nextn_predict_layers
-        layers_range = config.mapping.pp_layers(total_layers)
-        local_layer_idx = layer_idx - layers_range[0]
-
-        self.attention = DeepseekV2Attention(
-            local_layer_idx=local_layer_idx,
-            hidden_size=config.hidden_size,
-            num_attention_heads=config.num_attention_heads,
-            q_lora_rank=config.q_lora_rank,
-            kv_lora_rank=config.kv_lora_rank,
-            qk_nope_head_dim=config.qk_nope_head_dim,
-            qk_rope_head_dim=config.qk_rope_head_dim,
-            v_head_dim=config.v_head_dim,
-            max_position_embeddings=config.max_position_embeddings,
-            eps=config.norm_epsilon,
-            attention_mask_type=AttentionMaskType.causal,
-            dtype=config.dtype,
-            position_embedding_type=PositionEmbeddingType.learned_absolute,
-            rotary_embedding_base=config.rotary_base,
-            rotary_embedding_scaling=None,
-            rotary_embedding_beta_fast=config.rotary_scaling['beta_fast'],
-            rotary_embedding_beta_slow=config.rotary_scaling['beta_slow'],
-            rotary_embedding_mscale=config.rotary_scaling['mscale'],
-            rotary_embedding_mscale_all_dim=config.
-            rotary_scaling['mscale_all_dim'],
-            rotary_embedding_origin_max_position=config.
-            rotary_scaling['original_max_position_embeddings'],
-            rotary_scaling=config.rotary_scaling,
-            tp_group=config.mapping.tp_group,
-            tp_size=config.mapping.tp_size,
-            tp_rank=config.mapping.tp_rank)
-
-        # MTP head always uses a dense MLP (not MoE)
-        self.post_layernorm = RmsNorm(normalized_shape=config.hidden_size,
-                                      eps=config.norm_epsilon,
-                                      dtype=config.dtype)
-        self.mlp = GatedMLP(
-            hidden_size=config.hidden_size,
-            ffn_hidden_size=config.intermediate_size,
-            hidden_act=non_gated_version(config.hidden_act),
-            dtype=config.dtype,
-            bias=False,
-            tp_group=config.mapping.tp_group,
-            tp_size=config.mapping.tp_size,
-            quant_mode=config.quant_mode)
-
-        # ------------------------------------------------------------------
-        # LM head (weights will be tied to base model lm_head)
-        # ------------------------------------------------------------------
-        vocab_size_padded = pad_vocab_size(config.vocab_size,
-                                           config.mapping.tp_size)
-        self.lm_head = ColumnLinear(config.hidden_size,
-                                    vocab_size_padded,
-                                    bias=False,
-                                    dtype=config.dtype,
-                                    tp_group=config.mapping.tp_group,
-                                    tp_size=config.mapping.tp_size,
-                                    gather_output=True)
-
-    def forward(self,
-                input_ids,
-                position_ids,
-                prev_hidden_states,
-                last_token_indices,
-                kv_cache_params=None,
-                attention_params=None,
-                spec_decoding_params=None,
-                logits_dtype='float32'):
-        """
-        Args:
-            input_ids: [num_tokens]  — token ids for this MTP step.
-            position_ids: [num_tokens] — position ids.
-            prev_hidden_states: [num_tokens, H] — hidden states from the
-                base model (step 0) or the previous MTP layer (step > 0).
-            last_token_indices: indices selecting the tokens whose logits
-                we emit (forwarded from eagle_prepare_drafter_inputs).
-            kv_cache_params, attention_params, spec_decoding_params:
-                same as a regular decoder layer.
-            logits_dtype: cast target for lm_head output.
-
-        Returns:
-            h_last: [num_selected, H] — hidden states at the selected
-                (last-token) positions, ready as prev_hidden_states for
-                the next MTP layer.
-            logits: [num_selected, vocab_size] — draft logits.
-        """
-        # 1. Embed and normalize
-        embed = self.vocab_embedding(input_ids)
-        x_embed = self.enorm(embed)
-        x_hidden = self.hnorm(prev_hidden_states)
-
-        # 2. Fuse embed + hidden and project to hidden_size
-        fused = concat([x_embed, x_hidden], dim=-1)
-        h = self.eh_proj(fused)
-
-        # 3. Decoder layer
-        residual = h
-        h = self.input_layernorm(h)
-        attn_out = self.attention(
-            hidden_states=h,
-            use_cache=True,
-            spec_decoding_params=spec_decoding_params,
-            kv_cache_params=kv_cache_params,
-            attention_params=attention_params)
-        if isinstance(attn_out, tuple):
-            attn_out = attn_out[0]  # discard KV-cache presents
-        h = residual + attn_out
-
-        residual = h
-        h = self.post_layernorm(h)
-        h = self.mlp(h)
-        h = residual + h
-
-        # 4. Draft logits (only for selected positions)
-        h_last = gather_last_token_logits(
-            h, last_token_indices,
-            default_net().plugin_config.remove_input_padding)
-        logits = cast(self.lm_head(h_last), logits_dtype)
-        # Return h_last (gathered, selected tokens only) so that
-        # _mtp_fwd_helper can pass the correct-sized tensor as
-        # prev_hidden_states to subsequent MTP layers.  Returning the full
-        # h would grow the concat buffer incorrectly for num_mtp_layers > 1.
-        return h_last, logits
-
-
 class DeepseekV2MTPForCausalLM(DeepseekV2ForCausalLM):
     """DeepSeek R1/V3 with MTP speculative decoding on the TRT backend.
 
-    Inherits the base model from ``DeepseekV2ForCausalLM`` and adds
-    ``num_nextn_predict_layers`` MTP draft heads.  Eagle C++ plugins are
-    reused for token acceptance and draft token decoding; only the
-    hidden-state fusion (``eh_proj``) is novel Python/TRT logic.
+    MTP uses a **single set of weights** (one MTP draft head in the checkpoint)
+    run autoregressively N times to generate N draft tokens.
+
+    To remain compatible with TRT-LLM's paged-KV-cache infrastructure
+    (which requires a fixed ``local_layer_idx`` per attention plugin call),
+    we create N ``DeepseekV2Attention`` objects with distinct KV-cache slots
+    (base_num_hidden_layers + 0 … + N-1).  All non-attention components
+    (enorm, hnorm, eh_proj, input_layernorm, post_layernorm, mlp) share a
+    **single module instance** called N times in the forward loop.  The base
+    model's ``vocab_embedding`` and ``lm_head`` are reused directly (weight
+    tying).  All N attention objects load their weights from the same single
+    MTP layer in the checkpoint at conversion time.
     """
 
     config_class = DeepseekV2MTPConfig
 
     def __init__(self, config: DeepseekV2MTPConfig):
         super().__init__(config)
-        # Exposed for the TRT builder (checks hasattr(model.config, 'num_eagle_layers'))
         self._num_mtp_layers = config.num_nextn_predict_layers
         self._max_draft_len = config.num_nextn_predict_layers  # linear chain
         self._max_non_leaves_per_layer = 1  # linear chain
 
-        if self.mapping.is_last_pp_rank():
-            # Each MTP head's attention uses a KV-cache slot starting at
-            # base_num_hidden_layers.
-            self.mtp_layers = ModuleList([
-                DeepseekV2MTPLayer(
-                    config,
-                    layer_idx=config.num_hidden_layers + i)
-                for i in range(config.num_nextn_predict_layers)
-            ])
+        if not self.mapping.is_last_pp_rank():
+            return
+
+        N = config.num_nextn_predict_layers
+
+        # ------------------------------------------------------------------
+        # Shared non-attention components (single instance, called N times)
+        # ------------------------------------------------------------------
+        self.mtp_enorm = RmsNorm(normalized_shape=config.hidden_size,
+                                 eps=config.norm_epsilon,
+                                 dtype=config.dtype)
+        self.mtp_hnorm = RmsNorm(normalized_shape=config.hidden_size,
+                                 eps=config.norm_epsilon,
+                                 dtype=config.dtype)
+        # concat([enorm(embed), hnorm(hidden)]) → hidden_size; not TP-split
+        self.mtp_eh_proj = ColumnLinear(2 * config.hidden_size,
+                                        config.hidden_size,
+                                        bias=False,
+                                        dtype=config.dtype,
+                                        tp_group=None,
+                                        tp_size=1,
+                                        gather_output=True)
+        self.mtp_input_layernorm = RmsNorm(normalized_shape=config.hidden_size,
+                                           eps=config.norm_epsilon,
+                                           dtype=config.dtype)
+        self.mtp_post_layernorm = RmsNorm(normalized_shape=config.hidden_size,
+                                          eps=config.norm_epsilon,
+                                          dtype=config.dtype)
+        # MTP head always uses a dense MLP (not MoE)
+        self.mtp_mlp = GatedMLP(hidden_size=config.hidden_size,
+                                 ffn_hidden_size=config.intermediate_size,
+                                 hidden_act=non_gated_version(config.hidden_act),
+                                 dtype=config.dtype,
+                                 bias=False,
+                                 tp_group=config.mapping.tp_group,
+                                 tp_size=config.mapping.tp_size,
+                                 quant_mode=config.quant_mode)
+
+        # ------------------------------------------------------------------
+        # N attention objects — one KV-cache slot per autoregressive step.
+        # All N objects load their weights from the same single MTP layer in
+        # the checkpoint; the distinct local_layer_idx values let the paged-KV
+        # plugin track each step's KV history independently.
+        # ------------------------------------------------------------------
+        total_layers = config.num_hidden_layers + N
+        layers_range = config.mapping.pp_layers(total_layers)
+        self.mtp_attentions = ModuleList([
+            DeepseekV2Attention(
+                local_layer_idx=(config.num_hidden_layers + i) - layers_range[0],
+                hidden_size=config.hidden_size,
+                num_attention_heads=config.num_attention_heads,
+                q_lora_rank=config.q_lora_rank,
+                kv_lora_rank=config.kv_lora_rank,
+                qk_nope_head_dim=config.qk_nope_head_dim,
+                qk_rope_head_dim=config.qk_rope_head_dim,
+                v_head_dim=config.v_head_dim,
+                max_position_embeddings=config.max_position_embeddings,
+                eps=config.norm_epsilon,
+                attention_mask_type=AttentionMaskType.causal,
+                dtype=config.dtype,
+                position_embedding_type=PositionEmbeddingType.learned_absolute,
+                rotary_embedding_base=config.rotary_base,
+                rotary_embedding_scaling=None,
+                rotary_embedding_beta_fast=config.rotary_scaling['beta_fast'],
+                rotary_embedding_beta_slow=config.rotary_scaling['beta_slow'],
+                rotary_embedding_mscale=config.rotary_scaling['mscale'],
+                rotary_embedding_mscale_all_dim=config.rotary_scaling[
+                    'mscale_all_dim'],
+                rotary_embedding_origin_max_position=config.rotary_scaling[
+                    'original_max_position_embeddings'],
+                rotary_scaling=config.rotary_scaling,
+                tp_group=config.mapping.tp_group,
+                tp_size=config.mapping.tp_size,
+                tp_rank=config.mapping.tp_rank)
+            for i in range(N)
+        ])
+
+    # ------------------------------------------------------------------
+    # MTP forward step (shared weights, per-step attention)
+    # ------------------------------------------------------------------
+
+    def _forward_mtp_step(self, li: int, drafter_inputs: dict,
+                          logits_dtype: str = 'float32'):
+        """Run one MTP autoregressive step using the shared weight set.
+
+        Non-attention ops (enorm/hnorm/eh_proj/mlp/layer-norms) are shared
+        single-instance modules called for every step li.  self.mtp_attentions[li]
+        provides a distinct KV-cache slot for step li so each autoregressive
+        step's key/value history is tracked independently.  vocab_embedding and
+        lm_head are inherited from the base model (weight tying).
+
+        Returns:
+            h_last: [num_selected, H] gathered hidden states for next step.
+            logits: [num_selected, vocab_size] draft logits.
+        """
+        input_ids = drafter_inputs['input_ids']
+        prev_hidden = drafter_inputs['hidden_states']
+        last_token_indices = drafter_inputs['last_token_indices']
+        kv_cache_params = drafter_inputs['kv_cache_params']
+        attention_params = drafter_inputs['attention_params']
+        spec_decoding_params = drafter_inputs['spec_decoding_params']
+
+        # 1. Fuse embed(input_ids) + prev_hidden → projected hidden
+        #    vocab_embedding shared with base model (weight tying)
+        embed = self.vocab_embedding(input_ids)
+        x = self.mtp_eh_proj(
+            concat([self.mtp_enorm(embed), self.mtp_hnorm(prev_hidden)],
+                   dim=-1))
+
+        # 2. Decoder layer — attention uses step-specific KV slot
+        residual = x
+        attn_out = self.mtp_attentions[li](
+            hidden_states=self.mtp_input_layernorm(x),
+            use_cache=True,
+            spec_decoding_params=spec_decoding_params,
+            kv_cache_params=kv_cache_params,
+            attention_params=attention_params)
+        if isinstance(attn_out, tuple):
+            attn_out = attn_out[0]
+        h = residual + attn_out
+
+        residual = h
+        h = residual + self.mtp_mlp(self.mtp_post_layernorm(h))
+
+        # 3. Draft logits for selected positions; lm_head shared with base model
+        h_last = gather_last_token_logits(
+            h, last_token_indices,
+            default_net().plugin_config.remove_input_padding)
+        logits = cast(self.lm_head(h_last), logits_dtype)
+        return h_last, logits
 
     # ------------------------------------------------------------------
     # Internal helpers (mirrors EagleForCausalLM._prepare_drafter_inputs)
@@ -776,16 +719,9 @@ class DeepseekV2MTPForCausalLM(DeepseekV2ForCausalLM):
                     spec_decoding_params.spec_decoding_generation_lengths,
                     spec_decoding_use=spec_decoding_params.spec_decoding_use)
 
-            # Run MTP layer: eh_proj fusion + decoder
-            h_out, draft_logits = self.mtp_layers[li](
-                input_ids=drafter_inputs['input_ids'],
-                position_ids=drafter_inputs['position_ids'],
-                prev_hidden_states=drafter_inputs['hidden_states'],
-                last_token_indices=drafter_inputs['last_token_indices'],
-                kv_cache_params=drafter_inputs['kv_cache_params'],
-                attention_params=drafter_inputs['attention_params'],
-                spec_decoding_params=drafter_inputs['spec_decoding_params'],
-                logits_dtype=self.config.logits_dtype)
+            # Run one MTP autoregressive step: shared weights + per-step attention
+            h_out, draft_logits = self._forward_mtp_step(
+                li, drafter_inputs, logits_dtype=self.config.logits_dtype)
 
             # Decode draft tokens via Eagle plugin
             top_k_sampling = True  # TODO: make configurable
