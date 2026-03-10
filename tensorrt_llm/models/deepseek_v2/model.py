@@ -510,8 +510,8 @@ class DeepseekV2MTPForCausalLM(DeepseekV2ForCausalLM):
         spec_decoding_params = drafter_inputs['spec_decoding_params']
 
         # 1. Fuse embed(input_ids) + prev_hidden → projected hidden
-        #    vocab_embedding shared with base model (weight tying)
-        embed = self.vocab_embedding(input_ids)
+        #    vocab_embedding is under self.transformer (weight tying with base model)
+        embed = self.transformer.vocab_embedding(input_ids)
         x = self.mtp_eh_proj(
             concat([self.mtp_enorm(embed), self.mtp_hnorm(prev_hidden)],
                    dim=-1))
