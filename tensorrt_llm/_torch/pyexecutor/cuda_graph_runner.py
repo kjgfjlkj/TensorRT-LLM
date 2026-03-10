@@ -355,6 +355,13 @@ class CUDAGraphRunner:
                 if postprocess_fn is not None:
                     postprocess_fn(capture_inputs)
 
+            # Synchronize all CUDA streams before capture. Warmup runs may have
+            # submitted work to auxiliary streams (e.g. for multi-stream MoE).
+            # torch.cuda.graph() only synchronizes the current stream, so aux
+            # streams would still have uncaptured work, causing the error
+            # "dependency created on uncaptured work in another stream" when
+            # those streams later join the graph capture via event waits.
+            torch.cuda.synchronize()
             with torch.cuda.graph(graph, pool=self.memory_pool):
                 output = _setup_spec_decoding_and_forward(
                     key, forward_fn, capture_inputs)
