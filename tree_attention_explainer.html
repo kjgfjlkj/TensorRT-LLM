@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang Tree Attention 实现详解</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #222536;
+    --border: #2e3147;
+    --accent: #7c6af7;
+    --accent2: #5eead4;
+    --accent3: #f97316;
+    --accent4: #ec4899;
+    --text: #e2e8f0;
+    --text-dim: #8892a4;
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    line-height: 1.6;
+  }
+  .hero {
+    background: linear-gradient(135deg, #1a1d27 0%, #0f1117 50%, #1a1027 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 60px 40px 40px;
+    text-align: center;
+  }
+  .hero h1 {
+    font-size: 2.8rem;
+    background: linear-gradient(90deg, #7c6af7, #5eead4, #f97316);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+  }
+  .hero p { color: var(--text-dim); font-size: 1.1rem; max-width: 700px; margin: 0 auto; }
+
+  .container { max-width: 1300px; margin: 0 auto; padding: 40px 30px; }
+
+  .section {
+    margin-bottom: 60px;
+  }
+  .section-title {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--accent2);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-title::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 24px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .section-subtitle {
+    color: var(--text-dim);
+    margin-bottom: 28px;
+    font-size: 0.95rem;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    margin-bottom: 14px;
+    color: var(--accent);
+  }
+
+  /* Grid */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  /* Code blocks */
+  pre {
+    background: #0a0c14;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    font-family: 'Consolas', 'JetBrains Mono', monospace;
+  }
+  .kw { color: #c678dd; }
+  .fn { color: #61afef; }
+  .str { color: #98c379; }
+  .cmt { color: #5c6370; font-style: italic; }
+  .num { color: #d19a66; }
+  .cls { color: #e5c07b; }
+  .var { color: #e06c75; }
+  .attr { color: #56b6c2; }
+
+  /* SVG diagrams */
+  svg { width: 100%; display: block; }
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    overflow: hidden;
+  }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 0; flex-wrap: wrap; }
+  .tab-btn {
+    padding: 8px 20px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text-dim);
+    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    font-size: 0.88rem;
+    transition: all 0.2s;
+    border-bottom: none;
+  }
+  .tab-btn.active {
+    background: var(--surface);
+    color: var(--text);
+    border-color: var(--accent);
+    border-bottom-color: var(--surface);
+  }
+  .tab-content {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0 8px 8px 8px;
+    padding: 24px;
+  }
+  .tab-content.active { display: block; }
+
+  /* Flow arrows */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 16px 0;
+  }
+  .flow-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 0.88rem;
+    white-space: nowrap;
+  }
+  .flow-box.highlight { border-color: var(--accent); color: var(--accent); }
+  .flow-box.green { border-color: var(--green); color: var(--green); }
+  .flow-box.orange { border-color: var(--accent3); color: var(--accent3); }
+  .flow-box.pink { border-color: var(--accent4); color: var(--accent4); }
+  .arrow { color: var(--text-dim); font-size: 1.2rem; }
+
+  /* Badge */
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .badge-purple { background: rgba(124,106,247,0.2); color: var(--accent); border: 1px solid var(--accent); }
+  .badge-teal { background: rgba(94,234,212,0.15); color: var(--accent2); border: 1px solid var(--accent2); }
+  .badge-orange { background: rgba(249,115,22,0.15); color: var(--accent3); border: 1px solid var(--accent3); }
+  .badge-pink { background: rgba(236,72,153,0.15); color: var(--accent4); border: 1px solid var(--accent4); }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th { background: var(--surface2); color: var(--accent2); padding: 10px 14px; text-align: left; border-bottom: 2px solid var(--border); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text); }
+  tr:hover td { background: rgba(124,106,247,0.05); }
+
+  /* Info boxes */
+  .info-box {
+    border-left: 3px solid var(--accent);
+    background: rgba(124,106,247,0.08);
+    padding: 14px 18px;
+    border-radius: 0 8px 8px 0;
+    margin: 16px 0;
+    font-size: 0.9rem;
+  }
+  .info-box.teal { border-color: var(--accent2); background: rgba(94,234,212,0.06); }
+  .info-box.orange { border-color: var(--accent3); background: rgba(249,115,22,0.06); }
+  .info-box.green { border-color: var(--green); background: rgba(74,222,128,0.06); }
+
+  /* Annotation */
+  .annot {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-top: 8px;
+  }
+
+  /* Timeline */
+  .timeline { position: relative; padding-left: 30px; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 8px; top: 0; bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .timeline-item {
+    position: relative;
+    margin-bottom: 24px;
+    padding: 16px 18px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -26px;
+    top: 18px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+  }
+  .timeline-item .step {
+    font-size: 0.75rem;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* Mini file path */
+  .filepath {
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    background: var(--surface2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+
+  h3 { color: var(--text); margin: 18px 0 10px; font-size: 1rem; }
+  p { color: var(--text-dim); margin-bottom: 10px; font-size: 0.92rem; }
+  ul, ol { padding-left: 20px; color: var(--text-dim); font-size: 0.92rem; }
+  li { margin-bottom: 4px; }
+
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 40px;
+  }
+  .toc-title { font-weight: 700; margin-bottom: 14px; color: var(--accent2); }
+  .toc ol { counter-reset: toc; }
+  .toc ol li { counter-increment: toc; list-style: none; padding: 3px 0; }
+  .toc ol li::before { content: counter(toc) ". "; color: var(--accent); font-weight: 600; }
+  .toc a { color: var(--text); text-decoration: none; transition: color 0.2s; }
+  .toc a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>SGLang Tree Attention 实现详解</h1>
+  <p>基于 Radix Tree 的 KV Cache 共享机制 — 深入代码设计与算法原理</p>
+</div>
+
+<div class="container">
+
+  <!-- TOC -->
+  <div class="toc">
+    <div class="toc-title">目录</div>
+    <ol>
+      <li><a href="#overview">整体架构概览</a></li>
+      <li><a href="#radix-tree">Radix Tree 数据结构</a></li>
+      <li><a href="#prefix-sharing">前缀共享原理</a></li>
+      <li><a href="#tree-ops">树操作：match / insert / split</a></li>
+      <li><a href="#attention">Attention 计算过程</a></li>
+      <li><a href="#lifecycle">请求生命周期</a></li>
+      <li><a href="#eviction">驱逐与内存管理</a></li>
+      <li><a href="#backends">多种后端对比</a></li>
+    </ol>
+  </div>
+
+  <!-- SECTION 1: Overview -->
+  <div class="section" id="overview">
+    <div class="section-title">整体架构概览</div>
+    <div class="section-subtitle">Tree Attention = Radix Tree KV Cache + 分块 Attention 计算</div>
+
+    <div class="diagram-container" style="margin-bottom:20px">
+      <svg viewBox="0 0 1200 280" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#8892a4"/>
+          </marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#7c6af7"/>
+          </marker>
+          <marker id="arrow-teal" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#5eead4"/>
+          </marker>
+          <marker id="arrow-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#f97316"/>
+          </marker>
+        </defs>
+
+        <!-- Layers: User Request -->
+        <rect x="30" y="30" width="200" height="50" rx="8" fill="#1a1d27" stroke="#7c6af7" stroke-width="1.5"/>
+        <text x="130" y="50" text-anchor="middle" fill="#7c6af7" font-size="12" font-weight="bold">用户请求 (Req)</text>
+        <text x="130" y="68" text-anchor="middle" fill="#8892a4" font-size="10">token_ids, extra_key</text>
+
+        <!-- Scheduler -->
+        <rect x="290" y="30" width="200" height="50" rx="8" fill="#1a1d27" stroke="#5eead4" stroke-width="1.5"/>
+        <text x="390" y="50" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="bold">Scheduler</text>
+        <text x="390" y="68" text-anchor="middle" fill="#8892a4" font-size="10">schedule_batch.py</text>
+
+        <!-- RadixCache -->
+        <rect x="560" y="10" width="200" height="90" rx="8" fill="#1a1d27" stroke="#f97316" stroke-width="1.5"/>
+        <text x="660" y="35" text-anchor="middle" fill="#f97316" font-size="12" font-weight="bold">RadixCache</text>
+        <text x="660" y="55" text-anchor="middle" fill="#8892a4" font-size="10">radix_cache.py</text>
+        <text x="660" y="73" text-anchor="middle" fill="#8892a4" font-size="10">match_prefix / insert</text>
+        <text x="660" y="89" text-anchor="middle" fill="#8892a4" font-size="10">evict / lock management</text>
+
+        <!-- ForwardBatch -->
+        <rect x="830" y="30" width="200" height="50" rx="8" fill="#1a1d27" stroke="#ec4899" stroke-width="1.5"/>
+        <text x="930" y="50" text-anchor="middle" fill="#ec4899" font-size="12" font-weight="bold">ForwardBatch</text>
+        <text x="930" y="68" text-anchor="middle" fill="#8892a4" font-size="10">forward_batch_info.py</text>
+
+        <!-- KV Cache -->
+        <rect x="560" y="140" width="200" height="60" rx="8" fill="#1a1d27" stroke="#60a5fa" stroke-width="1.5"/>
+        <text x="660" y="165" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="bold">KV Cache Pool</text>
+        <text x="660" y="183" text-anchor="middle" fill="#8892a4" font-size="10">token_to_kv_pool (GPU)</text>
+
+        <!-- RadixAttention -->
+        <rect x="830" y="140" width="200" height="60" rx="8" fill="#1a1d27" stroke="#4ade80" stroke-width="1.5"/>
+        <text x="930" y="165" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="bold">RadixAttention</text>
+        <text x="930" y="183" text-anchor="middle" fill="#8892a4" font-size="10">radix_attention.py</text>
+
+        <!-- FlashInfer Backend -->
+        <rect x="1060" y="100" width="120" height="60" rx="8" fill="#1a1d27" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="1120" y="126" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="bold">FlashInfer</text>
+        <text x="1120" y="143" text-anchor="middle" fill="#8892a4" font-size="10">Backend</text>
+
+        <!-- Arrows -->
+        <line x1="230" y1="55" x2="285" y2="55" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="490" y1="55" x2="555" y2="55" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="760" y1="55" x2="825" y2="55" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="660" y1="100" x2="660" y2="135" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="1030" y1="55" x2="1120" y2="100" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="1030" y1="160" x2="1060" y2="140" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="760" y1="165" x2="825" y2="165" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <!-- Bidirectional KV Cache ↔ RadixCache -->
+        <line x1="660" y1="100" x2="660" y2="135" stroke="#f97316" stroke-width="1" stroke-dasharray="4,3"/>
+
+        <!-- Labels -->
+        <text x="250" y="47" fill="#8892a4" font-size="9">prefix lookup</text>
+        <text x="500" y="47" fill="#8892a4" font-size="9">match_prefix</text>
+        <text x="775" y="47" fill="#8892a4" font-size="9">BatchInfo</text>
+        <text x="665" y="125" fill="#8892a4" font-size="9">indices</text>
+        <text x="770" y="158" fill="#8892a4" font-size="9">kv_buffer</text>
+
+        <!-- Legend -->
+        <rect x="30" y="220" width="1140" height="48" rx="6" fill="#0f1117" stroke="#2e3147"/>
+        <text x="60" y="240" fill="#8892a4" font-size="10" font-weight="bold">核心流程：</text>
+        <text x="120" y="240" fill="#e2e8f0" font-size="10">① 请求到达 → ② Scheduler 调 match_prefix → ③ 获取已缓存 KV 索引 → ④ 构建 ForwardBatch（prefix_lens + seq_lens）→ ⑤ RadixAttention 分别处理 prefix(paged) + extend(ragged)</text>
+        <text x="60" y="258" fill="#8892a4" font-size="10">关键文件：</text>
+        <text x="113" y="258" fill="#7c6af7" font-size="10">radix_attention.py</text>
+        <text x="220" y="258" fill="#f97316" font-size="10">radix_cache.py</text>
+        <text x="303" y="258" fill="#ec4899" font-size="10">forward_batch_info.py</text>
+        <text x="427" y="258" fill="#5eead4" font-size="10">schedule_batch.py</text>
+        <text x="527" y="258" fill="#fbbf24" font-size="10">flashinfer_backend.py</text>
+      </svg>
+    </div>
+
+    <div class="info-box">
+      <strong>Tree Attention 的核心思想：</strong> 多个请求可能共享相同的前缀 token（如系统提示词 system prompt）。SGLang 用一棵 Radix Tree 索引所有已计算过的 KV Cache，新请求只需计算 <em>未命中</em> 的新 token，大幅减少重复计算。
+    </div>
+  </div>
+
+  <!-- SECTION 2: Radix Tree -->
+  <div class="section" id="radix-tree">
+    <div class="section-title">Radix Tree 数据结构</div>
+    <div class="section-subtitle">以 TreeNode 为节点，每个节点对应一段 token 序列及其 KV Cache 索引</div>
+
+    <div class="grid-2">
+      <div>
+        <div class="diagram-container">
+          <svg viewBox="0 0 560 440" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <marker id="a2" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <polygon points="0 0, 7 2.5, 0 5" fill="#5eead4"/>
+              </marker>
+            </defs>
+
+            <!-- Title -->
+            <text x="280" y="22" text-anchor="middle" fill="#5eead4" font-size="13" font-weight="bold">Radix Tree 结构示例</text>
+
+            <!-- Root -->
+            <rect x="220" y="38" width="120" height="42" rx="8" fill="#1a1d27" stroke="#7c6af7" stroke-width="2"/>
+            <text x="280" y="55" text-anchor="middle" fill="#7c6af7" font-size="11" font-weight="bold">root</text>
+            <text x="280" y="72" text-anchor="middle" fill="#8892a4" font-size="9">lock_ref=0</text>
+
+            <!-- Node A: [1,2,3] shared prefix -->
+            <rect x="180" y="118" width="200" height="52" rx="8" fill="#1a1d27" stroke="#f97316" stroke-width="2"/>
+            <text x="280" y="136" text-anchor="middle" fill="#f97316" font-size="11" font-weight="bold">key=[1,2,3] <tspan fill="#fbbf24">★共享</tspan></text>
+            <text x="280" y="152" text-anchor="middle" fill="#8892a4" font-size="9">value=[kv₁,kv₂,kv₃]  lock_ref=2</text>
+
+            <!-- Node B: [4,5,6] req1 suffix -->
+            <rect x="60" y="220" width="160" height="52" rx="8" fill="#1a1d27" stroke="#4ade80" stroke-width="1.5"/>
+            <text x="140" y="238" text-anchor="middle" fill="#4ade80" font-size="11">key=[4,5,6]</text>
+            <text x="140" y="255" text-anchor="middle" fill="#8892a4" font-size="9">value=[kv₄,kv₅,kv₆]</text>
+
+            <!-- Node C: [7,8] req2 suffix -->
+            <rect x="310" y="220" width="160" height="52" rx="8" fill="#1a1d27" stroke="#60a5fa" stroke-width="1.5"/>
+            <text x="390" y="238" text-anchor="middle" fill="#60a5fa" font-size="11">key=[7,8]</text>
+            <text x="390" y="255" text-anchor="middle" fill="#8892a4" font-size="9">value=[kv₇,kv₈]</text>
+
+            <!-- Node D: [9,10,11] req3 (different prefix) -->
+            <rect x="380" y="118" width="140" height="52" rx="8" fill="#1a1d27" stroke="#ec4899" stroke-width="1.5"/>
+            <text x="450" y="136" text-anchor="middle" fill="#ec4899" font-size="11">key=[9,10]</text>
+            <text x="450" y="152" text-anchor="middle" fill="#8892a4" font-size="9">value=[kv₉,kv₁₀]</text>
+
+            <!-- Arrows root → A -->
+            <line x1="280" y1="80" x2="280" y2="115" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a2)"/>
+            <!-- Arrows root → D -->
+            <line x1="320" y1="75" x2="430" y2="115" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a2)"/>
+            <!-- Arrows A → B -->
+            <line x1="230" y1="170" x2="180" y2="217" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a2)"/>
+            <!-- Arrows A → C -->
+            <line x1="330" y1="170" x2="360" y2="217" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a2)"/>
+
+            <!-- Requests -->
+            <rect x="40" y="320" width="180" height="52" rx="8" fill="rgba(74,222,128,0.08)" stroke="#4ade80" stroke-width="1" stroke-dasharray="4,3"/>
+            <text x="130" y="340" text-anchor="middle" fill="#4ade80" font-size="11">Req1: [1,2,3,4,5,6]</text>
+            <text x="130" y="356" text-anchor="middle" fill="#8892a4" font-size="9">prefix=3 tokens, extend=3</text>
+            <line x1="130" y1="320" x2="130" y2="280" stroke="#4ade80" stroke-width="1" stroke-dasharray="3,3"/>
+
+            <rect x="240" y="320" width="180" height="52" rx="8" fill="rgba(96,165,250,0.08)" stroke="#60a5fa" stroke-width="1" stroke-dasharray="4,3"/>
+            <text x="330" y="340" text-anchor="middle" fill="#60a5fa" font-size="11">Req2: [1,2,3,7,8]</text>
+            <text x="330" y="356" text-anchor="middle" fill="#8892a4" font-size="9">prefix=3 tokens, extend=2</text>
+            <line x1="360" y1="320" x2="390" y2="275" stroke="#60a5fa" stroke-width="1" stroke-dasharray="3,3"/>
+
+            <rect x="380" y="320" width="160" height="52" rx="8" fill="rgba(236,72,153,0.08)" stroke="#ec4899" stroke-width="1" stroke-dasharray="4,3"/>
+            <text x="460" y="340" text-anchor="middle" fill="#ec4899" font-size="11">Req3: [9,10,X]</text>
+            <text x="460" y="356" text-anchor="middle" fill="#8892a4" font-size="9">prefix=2 tokens, extend=1</text>
+            <line x1="460" y1="320" x2="460" y2="173" stroke="#ec4899" stroke-width="1" stroke-dasharray="3,3"/>
+
+            <!-- Shared label -->
+            <rect x="240" y="186" width="80" height="22" rx="4" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="280" y="201" text-anchor="middle" fill="#f97316" font-size="9" font-weight="bold">Req1 &amp; Req2 共享</text>
+
+            <!-- Legend -->
+            <text x="30" y="400" fill="#8892a4" font-size="9">lock_ref=2 说明有2个请求正在使用该节点，不可驱逐</text>
+            <text x="30" y="416" fill="#8892a4" font-size="9">★共享节点：kv₁,kv₂,kv₃ 物理上只存一份</text>
+          </svg>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="card-title">TreeNode 核心字段</div>
+          <span class="filepath">python/sglang/srt/mem_cache/radix_cache.py</span>
+          <pre style="margin-top:12px"><span class="kw">class</span> <span class="cls">TreeNode</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self):
+        <span class="cmt"># 树结构</span>
+        self.<span class="attr">children</span>: dict           <span class="cmt"># 子节点</span>
+        self.<span class="attr">parent</span>: TreeNode         <span class="cmt"># 父节点</span>
+
+        <span class="cmt"># 存储内容</span>
+        self.<span class="attr">key</span>: RadixKey            <span class="cmt"># token_ids 序列</span>
+        self.<span class="attr">value</span>: torch.Tensor      <span class="cmt"># KV cache 索引</span>
+
+        <span class="cmt"># 锁与引用计数</span>
+        self.<span class="attr">lock_ref</span>: int = <span class="num">0</span>       <span class="cmt"># >0 时不可驱逐</span>
+        self.<span class="attr">host_ref_counter</span>: int    <span class="cmt"># CPU 侧引用计数</span>
+
+        <span class="cmt"># 驱逐策略</span>
+        self.<span class="attr">last_access_time</span>: float  <span class="cmt"># LRU 使用</span>
+        self.<span class="attr">hit_count</span>: int           <span class="cmt"># LFU 使用</span>
+        self.<span class="attr">priority</span>: int            <span class="cmt"># 优先级驱逐</span>
+
+        <span class="cmt"># 分层缓存 (CPU offload)</span>
+        self.<span class="attr">host_value</span>: torch.Tensor  <span class="cmt"># CPU 上的 KV</span>
+        self.<span class="attr">hash_value</span>: List[str]    <span class="cmt"># 页级 SHA256</span>
+        self.<span class="attr">pin_expiry</span>: float        <span class="cmt"># Pin 过期时间</span>
+
+<span class="kw">class</span> <span class="cls">RadixKey</span>:
+    token_ids: List[int]    <span class="cmt"># token ID 序列</span>
+    extra_key: Optional[str] <span class="cmt"># LoRA/cache_salt</span>
+    is_bigram: bool         <span class="cmt"># EAGLE bigram</span></pre>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-title">MatchResult — 前缀匹配返回值</div>
+          <pre><span class="kw">class</span> <span class="cls">MatchResult</span>(NamedTuple):
+    <span class="cmt"># GPU 上匹配到的 KV cache 索引</span>
+    device_indices: torch.Tensor
+
+    <span class="cmt"># 匹配终止的 TreeNode</span>
+    last_device_node: TreeNode
+    last_host_node: TreeNode
+
+    <span class="cmt"># 分层缓存命中统计</span>
+    host_hit_length: int = <span class="num">0</span>
+
+    <span class="cmt"># Mamba 模型专用</span>
+    mamba_branching_seqlen: Optional[int] = None
+
+    <span class="cmt"># 页对齐的保护长度</span>
+    cache_protected_len: Optional[int] = None</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 3: Prefix Sharing -->
+  <div class="section" id="prefix-sharing">
+    <div class="section-title">前缀共享原理</div>
+    <div class="section-subtitle">理解 extend_prefix_lens 与 extend_seq_lens 如何分割 attention 计算</div>
+
+    <div class="diagram-container" style="margin-bottom:20px">
+      <svg viewBox="0 0 1200 320" xmlns="http://www.w3.org/2000/svg">
+        <!-- Title -->
+        <text x="600" y="22" text-anchor="middle" fill="#5eead4" font-size="13" font-weight="bold">ForwardBatch 中的请求布局 (Extend/Prefill 阶段)</text>
+
+        <!-- Batch with 3 requests -->
+        <!-- Request 1 -->
+        <text x="30" y="65" fill="#8892a4" font-size="11">Req1</text>
+        <!-- prefix part -->
+        <rect x="80" y="48" width="180" height="34" rx="4" fill="rgba(249,115,22,0.15)" stroke="#f97316" stroke-width="1.5"/>
+        <text x="170" y="62" text-anchor="middle" fill="#f97316" font-size="10" font-weight="bold">PREFIX (已缓存)</text>
+        <text x="170" y="76" text-anchor="middle" fill="#f97316" font-size="9">token[0..5]  prefix_len=6</text>
+        <!-- extend part -->
+        <rect x="264" y="48" width="120" height="34" rx="4" fill="rgba(74,222,128,0.15)" stroke="#4ade80" stroke-width="1.5"/>
+        <text x="324" y="62" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="bold">EXTEND (新)</text>
+        <text x="324" y="76" text-anchor="middle" fill="#4ade80" font-size="9">token[6..9]  seq_len=4</text>
+
+        <!-- Request 2 -->
+        <text x="30" y="130" fill="#8892a4" font-size="11">Req2</text>
+        <rect x="80" y="113" width="270" height="34" rx="4" fill="rgba(249,115,22,0.15)" stroke="#f97316" stroke-width="1.5"/>
+        <text x="215" y="127" text-anchor="middle" fill="#f97316" font-size="10" font-weight="bold">PREFIX (已缓存)</text>
+        <text x="215" y="141" text-anchor="middle" fill="#f97316" font-size="9">token[0..8]  prefix_len=9</text>
+        <rect x="354" y="113" width="60" height="34" rx="4" fill="rgba(74,222,128,0.15)" stroke="#4ade80" stroke-width="1.5"/>
+        <text x="384" y="127" text-anchor="middle" fill="#4ade80" font-size="10">EXTEND</text>
+        <text x="384" y="141" text-anchor="middle" fill="#4ade80" font-size="9">len=2</text>
+
+        <!-- Request 3 -->
+        <text x="30" y="195" fill="#8892a4" font-size="11">Req3</text>
+        <rect x="80" y="178" width="60" height="34" rx="4" fill="rgba(249,115,22,0.15)" stroke="#f97316" stroke-width="1.5"/>
+        <text x="110" y="192" text-anchor="middle" fill="#f97316" font-size="10">PRE</text>
+        <text x="110" y="206" text-anchor="middle" fill="#f97316" font-size="9">len=2</text>
+        <rect x="144" y="178" width="210" height="34" rx="4" fill="rgba(74,222,128,0.15)" stroke="#4ade80" stroke-width="1.5"/>
+        <text x="249" y="192" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="bold">EXTEND (大部分是新的)</text>
+        <text x="249" y="206" text-anchor="middle" fill="#4ade80" font-size="9">token[2..8]  seq_len=7</text>
+
+        <!-- Vertical separator -->
+        <line x1="600" y1="40" x2="600" y2="240" stroke="#2e3147" stroke-width="1" stroke-dasharray="4,3"/>
+
+        <!-- FlashInfer Strategy -->
+        <text x="650" y="60" fill="#fbbf24" font-size="12" font-weight="bold">FlashInfer 双路计算策略</text>
+
+        <!-- Ragged wrapper box -->
+        <rect x="640" y="75" width="230" height="70" rx="8" fill="rgba(74,222,128,0.1)" stroke="#4ade80" stroke-width="1.5"/>
+        <text x="755" y="95" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="bold">Ragged Prefill Wrapper</text>
+        <text x="755" y="112" text-anchor="middle" fill="#8892a4" font-size="9">处理 EXTEND 部分</text>
+        <text x="755" y="126" text-anchor="middle" fill="#8892a4" font-size="9">causal=True (自回归mask)</text>
+        <text x="755" y="140" text-anchor="middle" fill="#8892a4" font-size="9">输出: o1, logsum_exp s1</text>
+
+        <!-- Paged wrapper box -->
+        <rect x="900" y="75" width="250" height="70" rx="8" fill="rgba(249,115,22,0.1)" stroke="#f97316" stroke-width="1.5"/>
+        <text x="1025" y="95" text-anchor="middle" fill="#f97316" font-size="11" font-weight="bold">Paged Prefill Wrapper</text>
+        <text x="1025" y="112" text-anchor="middle" fill="#8892a4" font-size="9">处理 PREFIX 缓存 KV</text>
+        <text x="1025" y="126" text-anchor="middle" fill="#8892a4" font-size="9">causal=False (全局可见)</text>
+        <text x="1025" y="140" text-anchor="middle" fill="#8892a4" font-size="9">输出: o2, logsum_exp s2</text>
+
+        <!-- merge_state -->
+        <rect x="770" y="180" width="230" height="48" rx="8" fill="rgba(124,106,247,0.15)" stroke="#7c6af7" stroke-width="2"/>
+        <text x="885" y="200" text-anchor="middle" fill="#7c6af7" font-size="12" font-weight="bold">merge_state(o1,s1,o2,s2)</text>
+        <text x="885" y="218" text-anchor="middle" fill="#8892a4" font-size="9">softmax LSE 融合: o = softmax_lse_merge(o1⊕o2)</text>
+
+        <!-- arrows -->
+        <line x1="755" y1="145" x2="855" y2="177" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrow-teal)"/>
+        <line x1="1025" y1="145" x2="935" y2="177" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+
+        <!-- Output -->
+        <rect x="800" y="258" width="170" height="36" rx="8" fill="#1a1d27" stroke="#5eead4" stroke-width="1.5"/>
+        <text x="885" y="278" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="bold">最终 Attention 输出 o</text>
+        <line x1="885" y1="228" x2="885" y2="255" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+
+        <!-- Math formula -->
+        <text x="650" y="300" fill="#8892a4" font-size="9">* merge_state: 利用 log-sum-exp 合并两路 softmax，避免数值溢出，等价于将 prefix KV 和 extend KV 放在同一次完整 attention 中计算</text>
+      </svg>
+    </div>
+
+    <div class="info-box teal">
+      <strong>关键洞察：</strong> Extend 阶段的 query token 需要 attend to 两部分 KV — (1) 已缓存的 prefix KV (paged) 和 (2) 当前批次新增的 extend KV (ragged)。FlashInfer 用两个独立 wrapper 分别计算，再通过 log-sum-exp 技巧无损合并。
+    </div>
+  </div>
+
+  <!-- SECTION 4: Tree Operations -->
+  <div class="section" id="tree-ops">
+    <div class="section-title">树操作详解</div>
+    <div class="section-subtitle">match_prefix / insert / split_node 三大核心操作</div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab(this,'match')">match_prefix</button>
+      <button class="tab-btn" onclick="switchTab(this,'insert')">insert</button>
+      <button class="tab-btn" onclick="switchTab(this,'split')">_split_node</button>
+      <button class="tab-btn" onclick="switchTab(this,'kv')">create_kv_indices</button>
+    </div>
+
+    <div id="tab-match" class="tab-content active">
+      <div class="grid-2">
+        <div>
+          <h3>match_prefix 流程</h3>
+          <p>给定新请求的 token 序列，在 Radix Tree 中找到最长公共前缀，返回对应的 KV cache 索引。</p>
+          <pre><span class="kw">def</span> <span class="fn">match_prefix</span>(self, params) -> MatchResult:
+    key = params.key
+    value = []
+    last_node = self.root_node
+
+    <span class="kw">while</span> <span class="fn">len</span>(key) > <span class="num">0</span>:
+        <span class="cmt"># 从 key 首位查找子节点</span>
+        child_key = self.get_child_key_fn(key)
+        <span class="kw">if</span> child_key <span class="kw">not in</span> node.children:
+            <span class="kw">break</span>
+
+        child = node.children[child_key]
+        <span class="cmt"># 计算当前子节点与 key 的公共前缀长度</span>
+        prefix_len = self.key_match_fn(child.key, key)
+
+        <span class="kw">if</span> prefix_len < <span class="fn">len</span>(child.key):
+            <span class="cmt"># 部分匹配：需要分裂节点</span>
+            new_node = self.<span class="fn">_split_node</span>(child.key, child, prefix_len)
+            value.<span class="fn">append</span>(new_node.value)
+            last_node = new_node
+            <span class="kw">break</span>
+        <span class="kw">else</span>:
+            <span class="cmt"># 完全匹配：继续向下遍历</span>
+            value.<span class="fn">append</span>(child.value)
+            last_node = child
+            key = key[prefix_len:]  <span class="cmt"># 消耗已匹配部分</span>
+            node = child
+
+    <span class="kw">return</span> MatchResult(
+        device_indices=<span class="fn">torch.cat</span>(value) <span class="kw">if</span> value <span class="kw">else</span> empty,
+        last_device_node=last_node,
+    )</pre>
+        </div>
+        <div>
+          <div class="diagram-container">
+            <svg viewBox="0 0 460 380" xmlns="http://www.w3.org/2000/svg">
+              <text x="230" y="20" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="bold">match_prefix 遍历过程</text>
+              <!-- Query: [1,2,3,4,X] -->
+              <rect x="100" y="32" width="260" height="32" rx="6" fill="rgba(124,106,247,0.15)" stroke="#7c6af7"/>
+              <text x="230" y="48" text-anchor="middle" fill="#7c6af7" font-size="11">查询: key = [1, 2, 3, 4, X]</text>
+              <text x="230" y="60" text-anchor="middle" fill="#8892a4" font-size="9">新请求 token 序列</text>
+
+              <line x1="230" y1="65" x2="230" y2="85" stroke="#5eead4" stroke-width="1.5"/>
+
+              <!-- Step1: root -->
+              <rect x="170" y="88" width="120" height="36" rx="6" fill="#1a1d27" stroke="#2e3147"/>
+              <text x="230" y="105" text-anchor="middle" fill="#8892a4" font-size="10">root node</text>
+              <text x="230" y="120" text-anchor="middle" fill="#5c6370" font-size="9">查 children[1]</text>
+
+              <line x1="230" y1="125" x2="230" y2="145" stroke="#5eead4" stroke-width="1.5"/>
+              <text x="245" y="138" fill="#4ade80" font-size="9">✓ 命中</text>
+
+              <!-- Step2: node [1,2,3] full match -->
+              <rect x="130" y="148" width="200" height="50" rx="6" fill="rgba(249,115,22,0.1)" stroke="#f97316"/>
+              <text x="230" y="165" text-anchor="middle" fill="#f97316" font-size="11" font-weight="bold">node: key=[1,2,3]</text>
+              <text x="230" y="180" text-anchor="middle" fill="#8892a4" font-size="9">prefix_len=3 == len(key)=3 ✓全匹配</text>
+              <text x="230" y="193" text-anchor="middle" fill="#4ade80" font-size="9">value=[kv₁,kv₂,kv₃] 加入结果</text>
+
+              <line x1="230" y1="200" x2="230" y2="218" stroke="#5eead4" stroke-width="1.5"/>
+              <text x="248" y="212" fill="#8892a4" font-size="9">key=[4,X]</text>
+
+              <!-- Step3: node [4,5,6] partial match -->
+              <rect x="100" y="220" width="260" height="60" rx="6" fill="rgba(236,72,153,0.1)" stroke="#ec4899"/>
+              <text x="230" y="238" text-anchor="middle" fill="#ec4899" font-size="11" font-weight="bold">node: key=[4,5,6]</text>
+              <text x="230" y="253" text-anchor="middle" fill="#8892a4" font-size="9">key_match([4,5,6], [4,X]) = 1</text>
+              <text x="230" y="267" text-anchor="middle" fill="#fbbf24" font-size="9">1 &lt; len([4,5,6])=3 → 部分匹配!</text>
+              <text x="230" y="281" text-anchor="middle" fill="#8892a4" font-size="9">→ split_node(key=[4,5,6], pos=1)</text>
+
+              <line x1="230" y1="282" x2="230" y2="302" stroke="#f97316" stroke-width="1.5"/>
+
+              <!-- Result -->
+              <rect x="80" y="305" width="300" height="52" rx="6" fill="rgba(124,106,247,0.1)" stroke="#7c6af7"/>
+              <text x="230" y="322" text-anchor="middle" fill="#7c6af7" font-size="11" font-weight="bold">返回 MatchResult</text>
+              <text x="230" y="338" text-anchor="middle" fill="#8892a4" font-size="9">device_indices = [kv₁,kv₂,kv₃,kv₄]</text>
+              <text x="230" y="352" text-anchor="middle" fill="#8892a4" font-size="9">last_node = 分裂后的 [4] 节点</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-insert" class="tab-content">
+      <div class="grid-2">
+        <div>
+          <h3>insert 流程</h3>
+          <p>请求完成后，将新计算的 KV cache 插入 Radix Tree 以供后续请求复用。</p>
+          <pre><span class="kw">def</span> <span class="fn">insert</span>(self, params: InsertParams) -> InsertResult:
+    key = params.key    <span class="cmt"># 完整 token 序列</span>
+    value = params.value <span class="cmt"># 对应 KV cache 索引</span>
+
+    prefix_len = self.<span class="fn">_insert_helper</span>(
+        self.root_node, key, value, params.priority
+    )
+    <span class="kw">return</span> InsertResult(prefix_len=prefix_len)
+
+<span class="kw">def</span> <span class="fn">_insert_helper</span>(self, node, key, value, priority):
+    total_prefix = <span class="num">0</span>
+
+    <span class="kw">while</span> <span class="fn">len</span>(key) > <span class="num">0</span>:
+        child_key = self.<span class="fn">get_child_key_fn</span>(key)
+
+        <span class="kw">if</span> child_key <span class="kw">not in</span> node.children:
+            <span class="kw">break</span>   <span class="cmt"># 找到插入位置</span>
+
+        child = node.children[child_key]
+        prefix_len = self.<span class="fn">key_match_fn</span>(child.key, key)
+        total_prefix += prefix_len
+
+        <span class="kw">if</span> prefix_len == <span class="fn">len</span>(child.key):
+            <span class="cmt"># 完全匹配，继续深入</span>
+            key = key[prefix_len:]
+            value = value[prefix_len:]
+            node = child
+        <span class="kw">else</span>:
+            <span class="cmt"># 部分匹配，先分裂再插入</span>
+            new_node = self.<span class="fn">_split_node</span>(child.key, child, prefix_len)
+            node = new_node
+            key = key[prefix_len:]
+            value = value[prefix_len:]
+            <span class="kw">break</span>
+
+    <span class="cmt"># 剩余 key 创建新节点</span>
+    <span class="kw">if</span> <span class="fn">len</span>(key) > <span class="num">0</span>:
+        new_node = TreeNode(priority=priority)
+        new_node.parent = node
+        new_node.key = key
+        new_node.value = value.<span class="fn">clone</span>()
+        node.children[child_key] = new_node
+        self.evictable_size_ += <span class="fn">len</span>(key)
+
+    <span class="kw">return</span> total_prefix  <span class="cmt"># 已存在的前缀长度</span></pre>
+        </div>
+        <div>
+          <div class="diagram-container">
+            <svg viewBox="0 0 460 400" xmlns="http://www.w3.org/2000/svg">
+              <text x="230" y="20" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="bold">insert 后树结构变化</text>
+
+              <!-- Before -->
+              <text x="110" y="48" text-anchor="middle" fill="#8892a4" font-size="11">插入前</text>
+              <rect x="60" y="58" width="100" height="30" rx="5" fill="#1a1d27" stroke="#7c6af7"/>
+              <text x="110" y="78" text-anchor="middle" fill="#7c6af7" font-size="10">root</text>
+              <line x1="110" y1="88" x2="110" y2="108" stroke="#5eead4" stroke-width="1"/>
+              <rect x="30" y="110" width="160" height="30" rx="5" fill="#1a1d27" stroke="#f97316"/>
+              <text x="110" y="130" text-anchor="middle" fill="#f97316" font-size="10">key=[1,2,3,4,5]</text>
+
+              <!-- Arrow insert -->
+              <text x="230" y="130" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="bold">插入 [1,2,3,9,10]</text>
+              <line x1="230" y1="135" x2="230" y2="175" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow-orange)"/>
+
+              <!-- After -->
+              <text x="350" y="48" text-anchor="middle" fill="#8892a4" font-size="11">插入后</text>
+              <rect x="300" y="58" width="100" height="30" rx="5" fill="#1a1d27" stroke="#7c6af7"/>
+              <text x="350" y="78" text-anchor="middle" fill="#7c6af7" font-size="10">root</text>
+              <line x1="350" y1="88" x2="350" y2="108" stroke="#5eead4" stroke-width="1"/>
+
+              <!-- Shared [1,2,3] -->
+              <rect x="280" y="110" width="140" height="34" rx="5" fill="rgba(249,115,22,0.15)" stroke="#f97316" stroke-width="2"/>
+              <text x="350" y="127" text-anchor="middle" fill="#f97316" font-size="10" font-weight="bold">key=[1,2,3] ★共享</text>
+              <text x="350" y="140" text-anchor="middle" fill="#8892a4" font-size="9">分裂产生</text>
+
+              <!-- [4,5] child -->
+              <line x1="325" y1="145" x2="295" y2="195" stroke="#5eead4" stroke-width="1"/>
+              <rect x="240" y="198" width="110" height="30" rx="5" fill="#1a1d27" stroke="#4ade80"/>
+              <text x="295" y="218" text-anchor="middle" fill="#4ade80" font-size="10">key=[4,5]</text>
+
+              <!-- [9,10] child -->
+              <line x1="375" y1="145" x2="405" y2="195" stroke="#5eead4" stroke-width="1"/>
+              <rect x="360" y="198" width="110" height="30" rx="5" fill="rgba(96,165,250,0.1)" stroke="#60a5fa" stroke-width="1.5"/>
+              <text x="415" y="218" text-anchor="middle" fill="#60a5fa" font-size="10">key=[9,10]  新增</text>
+
+              <!-- Legend -->
+              <rect x="20" y="260" width="420" height="120" rx="8" fill="#0f1117" stroke="#2e3147"/>
+              <text x="30" y="280" fill="#fbbf24" font-size="11" font-weight="bold">关键操作说明：</text>
+              <text x="30" y="300" fill="#8892a4" font-size="10">1. 从 root 遍历，[1,2,3,4,5] 与 [1,2,3,9,10] 有公共前缀 [1,2,3]</text>
+              <text x="30" y="316" fill="#8892a4" font-size="10">2. _split_node 将 [1,2,3,4,5] 拆分为 [1,2,3] + [4,5]</text>
+              <text x="30" y="332" fill="#8892a4" font-size="10">3. 在 [1,2,3] 节点下新增子节点 [9,10]</text>
+              <text x="30" y="348" fill="#4ade80" font-size="10">✓ [1,2,3] 的 KV cache 现在被两个请求共享</text>
+              <text x="30" y="364" fill="#8892a4" font-size="10">4. evictable_size_ += 2 (新增2个token的KV)</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-split" class="tab-content">
+      <div class="grid-2">
+        <div>
+          <h3>_split_node 节点分裂</h3>
+          <p>当查询/插入的 key 只与现有节点部分匹配时，需要分裂节点以精确对齐边界。</p>
+          <pre><span class="kw">def</span> <span class="fn">_split_node</span>(self, key, child, split_len):
+    <span class="cmt">"""
+    Before: parent -> [1,2,3,4,5] (child)
+    split_len=3
+    After:  parent -> [1,2,3] (new) -> [4,5] (child)
+    """</span>
+    <span class="cmt"># 创建新的中间节点</span>
+    new_node = <span class="cls">TreeNode</span>(priority=child.priority)
+    new_node.children = {
+        self.<span class="fn">get_child_key_fn</span>(key[split_len:]): child
+    }
+    new_node.parent = child.parent
+    new_node.key = child.key[:split_len]
+    new_node.value = child.value[:split_len].<span class="fn">clone</span>()
+
+    <span class="cmt"># 更新 child 节点 (缩短 key)</span>
+    child.parent = new_node
+    child.key = child.key[split_len:]
+    child.value = child.value[split_len:].<span class="fn">clone</span>()
+
+    <span class="cmt"># 更新 parent 的 children 指针</span>
+    new_node.parent.children[
+        self.<span class="fn">get_child_key_fn</span>(key)
+    ] = new_node
+
+    <span class="kw">return</span> new_node  <span class="cmt"># 返回新的公共前缀节点</span></pre>
+        </div>
+        <div>
+          <div class="diagram-container">
+            <svg viewBox="0 0 460 360" xmlns="http://www.w3.org/2000/svg">
+              <text x="230" y="20" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="bold">_split_node 图解</text>
+
+              <!-- Before split -->
+              <text x="120" y="45" text-anchor="middle" fill="#8892a4" font-size="11">分裂前</text>
+              <rect x="60" y="55" width="120" height="30" rx="5" fill="#1a1d27" stroke="#7c6af7"/>
+              <text x="120" y="75" text-anchor="middle" fill="#7c6af7" font-size="10">parent</text>
+              <line x1="120" y1="85" x2="120" y2="105" stroke="#5eead4" stroke-width="1.5"/>
+              <rect x="40" y="108" width="160" height="40" rx="5" fill="#1a1d27" stroke="#f97316" stroke-width="2"/>
+              <text x="120" y="125" text-anchor="middle" fill="#f97316" font-size="11" font-weight="bold">child: [1, 2, 3, 4, 5]</text>
+              <text x="120" y="141" text-anchor="middle" fill="#8892a4" font-size="9">value=[kv₁..kv₅]</text>
+
+              <!-- Query annotation -->
+              <text x="120" y="170" text-anchor="middle" fill="#fbbf24" font-size="10">查询: [1, 2, 3, X]</text>
+              <text x="120" y="184" text-anchor="middle" fill="#8892a4" font-size="9">匹配前3个: split_len=3</text>
+
+              <!-- Arrow -->
+              <text x="230" y="120" text-anchor="middle" fill="#fbbf24" font-size="18">→</text>
+
+              <!-- After split -->
+              <text x="350" y="45" text-anchor="middle" fill="#8892a4" font-size="11">分裂后</text>
+              <rect x="290" y="55" width="120" height="30" rx="5" fill="#1a1d27" stroke="#7c6af7"/>
+              <text x="350" y="75" text-anchor="middle" fill="#7c6af7" font-size="10">parent</text>
+              <line x1="350" y1="85" x2="350" y2="105" stroke="#5eead4" stroke-width="1.5"/>
+
+              <!-- new_node -->
+              <rect x="270" y="108" width="160" height="40" rx="5" fill="rgba(249,115,22,0.2)" stroke="#f97316" stroke-width="2"/>
+              <text x="350" y="125" text-anchor="middle" fill="#f97316" font-size="11" font-weight="bold">new_node: [1, 2, 3]</text>
+              <text x="350" y="141" text-anchor="middle" fill="#8892a4" font-size="9">value=[kv₁,kv₂,kv₃]  ← 新创建</text>
+
+              <line x1="350" y1="150" x2="350" y2="170" stroke="#5eead4" stroke-width="1.5"/>
+
+              <!-- child updated -->
+              <rect x="270" y="173" width="160" height="40" rx="5" fill="#1a1d27" stroke="#4ade80" stroke-width="1.5"/>
+              <text x="350" y="190" text-anchor="middle" fill="#4ade80" font-size="11">child (更新): [4, 5]</text>
+              <text x="350" y="206" text-anchor="middle" fill="#8892a4" font-size="9">value=[kv₄,kv₅]  key 缩短</text>
+
+              <!-- Explanation boxes -->
+              <rect x="30" y="240" width="400" height="100" rx="8" fill="#0f1117" stroke="#2e3147"/>
+              <text x="50" y="258" fill="#fbbf24" font-size="10" font-weight="bold">重要细节：</text>
+              <text x="50" y="275" fill="#8892a4" font-size="9">• new_node.value 用 .clone() 复制 kv₁..kv₃，避免与 child 共享内存</text>
+              <text x="50" y="291" fill="#8892a4" font-size="9">• child.value 也重新 .clone()，只保留 kv₄..kv₅</text>
+              <text x="50" y="307" fill="#8892a4" font-size="9">• parent.children 字典更新为指向 new_node</text>
+              <text x="50" y="323" fill="#4ade80" font-size="9">• 页对齐模式下，split_len 必须是 page_size 的整数倍</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-kv" class="tab-content">
+      <h3>create_flashinfer_kv_indices_triton</h3>
+      <p>将 Radix Tree 中的 KV cache 索引展开为 FlashInfer 所需的连续 kv_indices 数组。</p>
+      <div class="grid-2">
+        <pre><span class="cmt"># python/sglang/srt/layers/attention/flashinfer_backend.py</span>
+
+<span class="cmt"># 构建 paged kv indices</span>
+<span class="fn">create_flashinfer_kv_indices_triton</span>[grid](
+    req_to_token,       <span class="cmt"># [max_reqs, max_seq_len] token→kv_idx</span>
+    req_pool_indices,   <span class="cmt"># 当前 batch 中的请求 pool index</span>
+    paged_kernel_lens,  <span class="cmt"># 每个请求的 kv 长度 (prefix+extend)</span>
+    kv_indptr,          <span class="cmt"># cumsum: [0, len0, len0+len1, ...]</span>
+    kv_start_idx,       <span class="cmt"># 每个请求的 kv 起始位置</span>
+    kv_indices,         <span class="cmt"># 输出: 展开的 kv 索引数组</span>
+    BLOCK_SIZE=<span class="num">512</span>,
+)
+
+<span class="cmt"># qo_indptr: query/output 的起始位置</span>
+<span class="cmt"># 仅统计 extend 部分 (新 token)</span>
+qo_indptr[<span class="num">1</span>:bs+<span class="num">1</span>] = torch.<span class="fn">cumsum</span>(
+    seq_lens - prefix_lens, dim=<span class="num">0</span>
+)
+
+<span class="cmt"># kv_indptr: kv cache 的起始位置</span>
+<span class="cmt"># 包含 prefix + extend 全部 token</span>
+kv_indptr[<span class="num">1</span>:bs+<span class="num">1</span>] = torch.<span class="fn">cumsum</span>(
+    paged_kernel_lens, dim=<span class="num">0</span>
+)</pre>
+        <div class="diagram-container">
+          <svg viewBox="0 0 460 300" xmlns="http://www.w3.org/2000/svg">
+            <text x="230" y="18" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="bold">KV Indices 构建示意</text>
+
+            <!-- req_to_token matrix -->
+            <text x="20" y="42" fill="#8892a4" font-size="10" font-weight="bold">req_to_token[req_id, :]</text>
+            <!-- Req 0 -->
+            <text x="20" y="64" fill="#f97316" font-size="9">Req0:</text>
+            <rect x="55" y="50" width="30" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="70" y="65" text-anchor="middle" fill="#f97316" font-size="9">kv₁</text>
+            <rect x="87" y="50" width="30" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="102" y="65" text-anchor="middle" fill="#f97316" font-size="9">kv₂</text>
+            <rect x="119" y="50" width="30" height="22" fill="rgba(74,222,128,0.15)" stroke="#4ade80"/>
+            <text x="134" y="65" text-anchor="middle" fill="#4ade80" font-size="9">kv₃</text>
+            <rect x="151" y="50" width="30" height="22" fill="rgba(74,222,128,0.15)" stroke="#4ade80"/>
+            <text x="166" y="65" text-anchor="middle" fill="#4ade80" font-size="9">kv₄</text>
+            <text x="190" y="65" fill="#5c6370" font-size="9">prefix=2, extend=2</text>
+
+            <!-- Req 1 -->
+            <text x="20" y="96" fill="#60a5fa" font-size="9">Req1:</text>
+            <rect x="55" y="82" width="30" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="70" y="97" text-anchor="middle" fill="#f97316" font-size="9">kv₁</text>
+            <rect x="87" y="82" width="30" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="102" y="97" text-anchor="middle" fill="#f97316" font-size="9">kv₂</text>
+            <rect x="119" y="82" width="30" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="134" y="97" text-anchor="middle" fill="#f97316" font-size="9">kv₅</text>
+            <rect x="151" y="82" width="30" height="22" fill="rgba(96,165,250,0.15)" stroke="#60a5fa"/>
+            <text x="166" y="97" text-anchor="middle" fill="#60a5fa" font-size="9">kv₆</text>
+            <text x="190" y="97" fill="#5c6370" font-size="9">prefix=3, extend=1</text>
+
+            <!-- Arrow -->
+            <text x="230" y="130" text-anchor="middle" fill="#8892a4" font-size="10">Triton kernel 展开为线性数组</text>
+            <line x1="230" y1="135" x2="230" y2="155" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a2)"/>
+
+            <!-- kv_indices flat -->
+            <text x="20" y="172" fill="#8892a4" font-size="10" font-weight="bold">kv_indices (flat, paged)</text>
+            <rect x="20" y="180" width="28" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="34" y="195" text-anchor="middle" fill="#f97316" font-size="9">kv₁</text>
+            <rect x="50" y="180" width="28" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="64" y="195" text-anchor="middle" fill="#f97316" font-size="9">kv₂</text>
+            <rect x="80" y="180" width="28" height="22" fill="rgba(74,222,128,0.15)" stroke="#4ade80"/>
+            <text x="94" y="195" text-anchor="middle" fill="#4ade80" font-size="9">kv₃</text>
+            <rect x="110" y="180" width="28" height="22" fill="rgba(74,222,128,0.15)" stroke="#4ade80"/>
+            <text x="124" y="195" text-anchor="middle" fill="#4ade80" font-size="9">kv₄</text>
+            <rect x="155" y="180" width="28" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="169" y="195" text-anchor="middle" fill="#f97316" font-size="9">kv₁</text>
+            <rect x="185" y="180" width="28" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="199" y="195" text-anchor="middle" fill="#f97316" font-size="9">kv₂</text>
+            <rect x="215" y="180" width="28" height="22" fill="rgba(249,115,22,0.15)" stroke="#f97316"/>
+            <text x="229" y="195" text-anchor="middle" fill="#f97316" font-size="9">kv₅</text>
+            <rect x="245" y="180" width="28" height="22" fill="rgba(96,165,250,0.15)" stroke="#60a5fa"/>
+            <text x="259" y="195" text-anchor="middle" fill="#60a5fa" font-size="9">kv₆</text>
+
+            <text x="144" y="195" text-anchor="middle" fill="#5c6370" font-size="12">|</text>
+            <text x="20" y="215" fill="#8892a4" font-size="9">kv_indptr=[0, 4, 8]</text>
+            <text x="20" y="230" fill="#f97316" font-size="9">橙=prefix(共享)</text>
+            <text x="105" y="230" fill="#4ade80" font-size="9">绿=extend(新)</text>
+
+            <rect x="10" y="248" width="430" height="38" rx="6" fill="#0f1117" stroke="#2e3147"/>
+            <text x="20" y="265" fill="#8892a4" font-size="9">注意: kv₁,kv₂ 在两个请求中指向同一物理 KV cache slot (共享)</text>
+            <text x="20" y="280" fill="#8892a4" font-size="9">FlashInfer 直接通过 kv_indices 随机访问 GPU 上的 KV buffer</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 5: Attention Computation -->
+  <div class="section" id="attention">
+    <div class="section-title">Attention 计算过程</div>
+    <div class="section-subtitle">RadixAttention layer 如何在 forward_extend / forward_decode 中使用缓存</div>
+
+    <div class="diagram-container" style="margin-bottom: 20px">
+      <svg viewBox="0 0 1200 380" xmlns="http://www.w3.org/2000/svg">
+        <text x="600" y="22" text-anchor="middle" fill="#5eead4" font-size="13" font-weight="bold">forward_extend (Prefill) 完整流程</text>
+
+        <!-- Inputs -->
+        <rect x="20" y="40" width="130" height="60" rx="6" fill="#1a1d27" stroke="#7c6af7"/>
+        <text x="85" y="62" text-anchor="middle" fill="#7c6af7" font-size="10" font-weight="bold">输入 Q, K, V</text>
+        <text x="85" y="78" text-anchor="middle" fill="#8892a4" font-size="9">[total_new_tokens,</text>
+        <text x="85" y="91" text-anchor="middle" fill="#8892a4" font-size="9">num_heads, head_dim]</text>
+
+        <!-- KV Store -->
+        <rect x="20" y="140" width="130" height="52" rx="6" fill="#1a1d27" stroke="#60a5fa"/>
+        <text x="85" y="161" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="bold">KV Cache Pool</text>
+        <text x="85" y="176" text-anchor="middle" fill="#8892a4" font-size="9">get_kv_buffer(layer_id)</text>
+        <text x="85" y="189" text-anchor="middle" fill="#8892a4" font-size="9">Paged 格式</text>
+
+        <!-- Store new KV -->
+        <rect x="20" y="232" width="130" height="52" rx="6" fill="rgba(74,222,128,0.1)" stroke="#4ade80"/>
+        <text x="85" y="255" text-anchor="middle" fill="#4ade80" font-size="10">存入新 KV</text>
+        <text x="85" y="270" text-anchor="middle" fill="#8892a4" font-size="9">out_cache_loc</text>
+        <text x="85" y="283" text-anchor="middle" fill="#8892a4" font-size="9">对应新 token 位置</text>
+
+        <!-- Arrows from inputs -->
+        <line x1="150" y1="70" x2="230" y2="100" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+        <line x1="150" y1="165" x2="230" y2="165" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="150" y1="70" x2="230" y2="230" stroke="#7c6af7" stroke-width="1" stroke-dasharray="4,3"/>
+
+        <!-- Ragged wrapper -->
+        <rect x="230" y="78" width="210" height="80" rx="8" fill="rgba(74,222,128,0.08)" stroke="#4ade80" stroke-width="2"/>
+        <text x="335" y="100" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="bold">Ragged Prefill</text>
+        <text x="335" y="116" text-anchor="middle" fill="#8892a4" font-size="9">Q[new] attend K[new], V[new]</text>
+        <text x="335" y="130" text-anchor="middle" fill="#8892a4" font-size="9">causal=True, self-attention</text>
+        <text x="335" y="144" text-anchor="middle" fill="#fbbf24" font-size="9">输出: (o1, s1)</text>
+
+        <!-- Paged wrapper -->
+        <rect x="230" y="185" width="210" height="80" rx="8" fill="rgba(249,115,22,0.08)" stroke="#f97316" stroke-width="2"/>
+        <text x="335" y="207" text-anchor="middle" fill="#f97316" font-size="11" font-weight="bold">Paged Prefill</text>
+        <text x="335" y="223" text-anchor="middle" fill="#8892a4" font-size="9">Q[new] attend K[prefix], V[prefix]</text>
+        <text x="335" y="237" text-anchor="middle" fill="#8892a4" font-size="9">causal=False, cross-attention</text>
+        <text x="335" y="251" text-anchor="middle" fill="#fbbf24" font-size="9">输出: (o2, s2)</text>
+
+        <line x1="440" y1="118" x2="520" y2="200" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrow-teal)"/>
+        <line x1="440" y1="225" x2="520" y2="220" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+
+        <!-- Merge state -->
+        <rect x="520" y="165" width="200" height="80" rx="8" fill="rgba(124,106,247,0.12)" stroke="#7c6af7" stroke-width="2"/>
+        <text x="620" y="190" text-anchor="middle" fill="#7c6af7" font-size="12" font-weight="bold">merge_state</text>
+        <text x="620" y="206" text-anchor="middle" fill="#8892a4" font-size="9">o = softmax_lse_merge(o1, s1, o2, s2)</text>
+        <text x="620" y="220" text-anchor="middle" fill="#8892a4" font-size="9">等价于完整序列 attention</text>
+        <text x="620" y="234" text-anchor="middle" fill="#5eead4" font-size="10">数学上无损合并</text>
+
+        <!-- Final output -->
+        <rect x="790" y="175" width="150" height="60" rx="8" fill="#1a1d27" stroke="#5eead4" stroke-width="1.5"/>
+        <text x="865" y="198" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="bold">最终输出 o</text>
+        <text x="865" y="214" text-anchor="middle" fill="#8892a4" font-size="9">[total_new_tokens,</text>
+        <text x="865" y="227" text-anchor="middle" fill="#8892a4" font-size="9">num_heads*head_dim]</text>
+        <line x1="720" y1="205" x2="786" y2="205" stroke="#5eead4" stroke-width="1.5" marker-end="url(#arrow-teal)"/>
+
+        <!-- Decode path at bottom -->
+        <rect x="60" y="340" width="900" height="32" rx="6" fill="rgba(96,165,250,0.06)" stroke="#60a5fa" stroke-width="1"/>
+        <text x="80" y="358" fill="#60a5fa" font-size="10" font-weight="bold">Decode 阶段 (forward_decode)：</text>
+        <text x="200" y="358" fill="#8892a4" font-size="10">Q[1 token] → Paged Decode Wrapper → attend ALL cached KV (prefix + extend history) → o</text>
+        <text x="730" y="358" fill="#fbbf24" font-size="9">无需合并，单次计算</text>
+
+        <!-- Math formula box -->
+        <rect x="980" y="40" width="200" height="280" rx="10" fill="#0a0c14" stroke="#2e3147"/>
+        <text x="1080" y="62" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="bold">LSE Merge 公式</text>
+        <text x="990" y="90" fill="#8892a4" font-size="9">标准 attention:</text>
+        <text x="990" y="106" fill="#e2e8f0" font-size="9">o = softmax(QK^T/√d) · V</text>
+        <text x="990" y="132" fill="#8892a4" font-size="9">分块等价:</text>
+        <text x="990" y="148" fill="#e2e8f0" font-size="9">s = log-sum-exp(QK^T/√d)</text>
+        <text x="990" y="164" fill="#e2e8f0" font-size="9">o_i = exp(s_i - s) · o_i</text>
+        <text x="990" y="188" fill="#8892a4" font-size="9">合并两路:</text>
+        <text x="990" y="204" fill="#e2e8f0" font-size="9">s = log(exp(s₁) + exp(s₂))</text>
+        <text x="990" y="220" fill="#e2e8f0" font-size="9">o = (o₁·exp(s₁) +</text>
+        <text x="1008" y="236" fill="#e2e8f0" font-size="9">     o₂·exp(s₂)) / exp(s)</text>
+        <text x="990" y="262" fill="#4ade80" font-size="9">保证数值精确</text>
+        <text x="990" y="278" fill="#4ade80" font-size="9">= 完整 attention 等价</text>
+      </svg>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">forward_extend 代码核心</div>
+        <span class="filepath">flashinfer_backend.py</span>
+        <pre style="margin-top:10px"><span class="kw">def</span> <span class="fn">forward_extend</span>(self, q, k, v, layer, forward_batch):
+    <span class="cmt"># 使用 ragged+paged 双路</span>
+    o1, s1 = prefill_wrapper_ragged.<span class="fn">forward_return_lse</span>(
+        q, k, v, causal=<span class="kw">True</span>,
+    )
+    o2, s2 = prefill_wrapper_paged.<span class="fn">forward_return_lse</span>(
+        q,
+        kv_pool.<span class="fn">get_kv_buffer</span>(layer_id),
+        causal=<span class="kw">False</span>,  <span class="cmt"># prefix 全局可见</span>
+    )
+    <span class="cmt"># LSE 合并</span>
+    o, _ = <span class="fn">merge_state</span>(o1, s1, o2, s2)
+    <span class="kw">return</span> o.<span class="fn">view</span>(-<span class="num">1</span>, num_heads * head_dim)</pre>
+      </div>
+      <div class="card">
+        <div class="card-title">forward_decode 代码核心</div>
+        <span class="filepath">flashinfer_backend.py</span>
+        <pre style="margin-top:10px"><span class="kw">def</span> <span class="fn">forward_decode</span>(self, q, k, v, layer, forward_batch):
+    <span class="cmt"># decode 直接 paged attention</span>
+    <span class="cmt"># 每次只有 1 个新 token</span>
+    decode_wrapper = self.forward_metadata.decode_wrappers[<span class="num">0</span>]
+
+    o = decode_wrapper.<span class="fn">forward</span>(
+        q.<span class="fn">contiguous</span>().<span class="fn">view</span>(-<span class="num">1</span>, num_heads, head_dim),
+        kv_pool.<span class="fn">get_kv_buffer</span>(layer_id),
+        sm_scale=layer.scaling,
+    )
+    <span class="kw">return</span> o.<span class="fn">view</span>(-<span class="num">1</span>, num_heads * head_dim)
+
+    <span class="cmt"># kv_pool 包含: prefix tokens + 之前生成的所有 tokens</span>
+    <span class="cmt"># 通过 kv_indices 随机访问，无需复制</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 6: Lifecycle -->
+  <div class="section" id="lifecycle">
+    <div class="section-title">请求生命周期</div>
+    <div class="section-subtitle">从请求到达到完成，KV Cache 在 Radix Tree 中的完整流转</div>
+
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="step">Step 1 — 新请求到达</div>
+        <p>Scheduler 接收新请求，调用 <code>tree_cache.match_prefix()</code> 查找最长公共前缀。</p>
+        <pre><span class="cmt"># schedule_batch.py</span>
+req.<span class="fn">update_prefix_from_tree_cache</span>(tree_cache)
+<span class="cmt"># 内部调用:</span>
+result = tree_cache.<span class="fn">match_prefix</span>(RadixKey(token_ids, extra_key))
+req.prefix_indices = result.device_indices   <span class="cmt"># 命中的 KV 索引</span>
+req.last_node = result.last_device_node      <span class="cmt"># 对应树节点</span>
+req.cache_protected_len = result.cache_protected_len
+<span class="cmt"># 锁定节点，防止驱逐</span>
+tree_cache.<span class="fn">inc_lock_ref</span>(req.last_node)</pre>
+      </div>
+
+      <div class="timeline-item">
+        <div class="step">Step 2 — 构建 ForwardBatch</div>
+        <p>将 prefix_indices 和新 token 的位置信息打包进 ForwardBatch，供 attention 层使用。</p>
+        <pre><span class="cmt"># forward_batch_info.py</span>
+forward_batch.extend_prefix_lens = torch.tensor(
+    [len(req.prefix_indices) for req in batch.reqs]
+)
+forward_batch.extend_seq_lens = torch.tensor(
+    [len(req.new_tokens) for req in batch.reqs]
+)
+<span class="cmt"># req_to_token_pool: 映射 (req_pool_idx, pos) → kv_cache_idx</span>
+<span class="cmt"># prefix 部分直接复制自 req.prefix_indices</span></pre>
+      </div>
+
+      <div class="timeline-item">
+        <div class="step">Step 3 — Extend (Prefill) 阶段</div>
+        <p>每个 transformer 层执行 RadixAttention，FlashInfer 用 prefix (paged) + extend (ragged) 双路计算。</p>
+        <pre><span class="cmt"># 每层 layer.forward() 中:</span>
+o = radix_attention.<span class="fn">forward</span>(q, k, v, layer, forward_batch)
+<span class="cmt"># RadixAttention.forward 根据 forward_batch.forward_mode:</span>
+<span class="kw">if</span> mode == ForwardMode.EXTEND:
+    <span class="kw">return</span> backend.<span class="fn">forward_extend</span>(q, k, v, layer, forward_batch)
+<span class="cmt"># 新 KV 存入 token_to_kv_pool[out_cache_loc]</span></pre>
+      </div>
+
+      <div class="timeline-item">
+        <div class="step">Step 4 — Chunked Prefill (可选)</div>
+        <p>长序列分块处理时，每块结束后将已计算的 KV 插入 Radix Tree。</p>
+        <pre>tree_cache.<span class="fn">cache_unfinished_req</span>(req, chunked=<span class="kw">True</span>)
+<span class="cmt"># 调用 tree.insert(RadixKey(tokens_so_far), kv_indices_so_far)</span>
+<span class="cmt"># 更新 req.prefix_indices 包含新缓存的部分</span>
+<span class="cmt"># 下一块 prefill 时可直接复用</span></pre>
+      </div>
+
+      <div class="timeline-item">
+        <div class="step">Step 5 — Decode 阶段</div>
+        <p>逐 token 生成阶段，每次 decode 的新 token 追加到 req_to_token_pool，直接用 paged decode 访问全量 KV。</p>
+        <pre><span class="kw">if</span> mode == ForwardMode.DECODE:
+    o = backend.<span class="fn">forward_decode</span>(q, k, v, layer, forward_batch)
+<span class="cmt"># 新 token 的 KV 存入 out_cache_loc</span>
+<span class="cmt"># req_to_token_pool 追加新条目</span></pre>
+      </div>
+
+      <div class="timeline-item">
+        <div class="step">Step 6 — 请求完成，写回 Radix Tree</div>
+        <p>生成结束后，将完整序列（prefix + extend + decode tokens）写入 Radix Tree 供后续请求复用。</p>
+        <pre>tree_cache.<span class="fn">cache_finished_req</span>(req, is_insert=<span class="kw">True</span>)
+<span class="cmt"># insert(RadixKey(all_tokens), all_kv_indices)</span>
+<span class="cmt"># 与已有路径合并（相同部分不重复存储）</span>
+<span class="cmt"># 减少锁引用: dec_lock_ref(req.last_node)</span>
+<span class="cmt"># 节点 lock_ref 降为 0 时变为可驱逐</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 7: Eviction -->
+  <div class="section" id="eviction">
+    <div class="section-title">驱逐与内存管理</div>
+    <div class="section-subtitle">lock_ref 引用计数 + 多种驱逐策略，确保 KV Cache 被高效复用</div>
+
+    <div class="grid-2">
+      <div>
+        <div class="diagram-container">
+          <svg viewBox="0 0 500 340" xmlns="http://www.w3.org/2000/svg">
+            <text x="250" y="20" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="bold">状态机：节点保护状态</text>
+
+            <!-- Protected state -->
+            <ellipse cx="130" cy="110" rx="100" ry="50" fill="rgba(74,222,128,0.1)" stroke="#4ade80" stroke-width="2"/>
+            <text x="130" y="105" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="bold">Protected</text>
+            <text x="130" y="122" text-anchor="middle" fill="#8892a4" font-size="9">lock_ref > 0</text>
+            <text x="130" y="136" text-anchor="middle" fill="#8892a4" font-size="9">不可驱逐</text>
+
+            <!-- Evictable state -->
+            <ellipse cx="370" cy="110" rx="100" ry="50" fill="rgba(249,115,22,0.1)" stroke="#f97316" stroke-width="2"/>
+            <text x="370" y="105" text-anchor="middle" fill="#f97316" font-size="11" font-weight="bold">Evictable</text>
+            <text x="370" y="122" text-anchor="middle" fill="#8892a4" font-size="9">lock_ref = 0</text>
+            <text x="370" y="136" text-anchor="middle" fill="#8892a4" font-size="9">可被驱逐</text>
+
+            <!-- Transitions -->
+            <!-- Protected → Evictable -->
+            <path d="M 225 95 Q 250 60 315 95" fill="none" stroke="#f87171" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <text x="250" y="70" text-anchor="middle" fill="#f87171" font-size="9">dec_lock_ref()</text>
+            <text x="250" y="82" text-anchor="middle" fill="#8892a4" font-size="8">req 完成/取消</text>
+
+            <!-- Evictable → Protected -->
+            <path d="M 275 125 Q 250 160 185 125" fill="none" stroke="#4ade80" stroke-width="1.5" marker-end="url(#a2)"/>
+            <text x="250" y="152" text-anchor="middle" fill="#4ade80" font-size="9">inc_lock_ref()</text>
+            <text x="250" y="164" text-anchor="middle" fill="#8892a4" font-size="8">新 req 命中此节点</text>
+
+            <!-- Evicted state -->
+            <ellipse cx="250" cy="270" rx="110" ry="44" fill="rgba(248,113,113,0.1)" stroke="#f87171" stroke-width="2"/>
+            <text x="250" y="265" text-anchor="middle" fill="#f87171" font-size="11" font-weight="bold">Evicted</text>
+            <text x="250" y="282" text-anchor="middle" fill="#8892a4" font-size="9">KV 内存释放，节点删除</text>
+
+            <!-- Evictable → Evicted -->
+            <line x1="370" y1="160" x2="340" y2="226" stroke="#f87171" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <text x="380" y="200" fill="#f87171" font-size="9">evict()</text>
+            <text x="345" y="212" fill="#8892a4" font-size="8">内存不足触发</text>
+
+            <!-- lock tracking -->
+            <rect x="10" y="175" width="150" height="60" rx="6" fill="#0f1117" stroke="#2e3147"/>
+            <text x="85" y="193" text-anchor="middle" fill="#8892a4" font-size="9" font-weight="bold">全局统计</text>
+            <text x="85" y="208" text-anchor="middle" fill="#4ade80" font-size="9">protected_size_</text>
+            <text x="85" y="222" text-anchor="middle" fill="#f97316" font-size="9">evictable_size_</text>
+          </svg>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">inc_lock_ref / dec_lock_ref</div>
+          <pre><span class="kw">def</span> <span class="fn">inc_lock_ref</span>(self, node: TreeNode):
+    <span class="kw">while</span> node != self.root_node:
+        <span class="kw">if</span> node.lock_ref == <span class="num">0</span>:
+            <span class="cmt"># evictable → protected</span>
+            self.evictable_size_ -= <span class="fn">len</span>(node.key)
+            self.protected_size_ += <span class="fn">len</span>(node.key)
+        node.lock_ref += <span class="num">1</span>
+        node = node.parent  <span class="cmt"># 向上锁定整条路径</span>
+
+<span class="kw">def</span> <span class="fn">dec_lock_ref</span>(self, node: TreeNode):
+    <span class="kw">while</span> node != self.root_node:
+        node.lock_ref -= <span class="num">1</span>
+        <span class="kw">if</span> node.lock_ref == <span class="num">0</span>:
+            <span class="cmt"># protected → evictable</span>
+            self.evictable_size_ += <span class="fn">len</span>(node.key)
+            self.protected_size_ -= <span class="fn">len</span>(node.key)
+        node = node.parent</pre>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-title">evict — LRU 驱逐核心</div>
+          <pre><span class="kw">def</span> <span class="fn">evict</span>(self, params: EvictParams):
+    <span class="cmt"># 收集所有可驱逐叶节点</span>
+    leaves = list(self.evictable_leaves)
+    heap = [(strategy.<span class="fn">get_priority</span>(n), n)
+             <span class="kw">for</span> n <span class="kw">in</span> leaves]
+    heapq.<span class="fn">heapify</span>(heap)
+
+    num_evicted = <span class="num">0</span>
+    <span class="kw">while</span> num_evicted < params.num_tokens:
+        _, x = heapq.<span class="fn">heappop</span>(heap)
+        <span class="cmt"># 释放 GPU KV 内存</span>
+        self.token_to_kv_pool_allocator.<span class="fn">free</span>(x.value)
+        num_evicted += <span class="fn">len</span>(x.value)
+        self.<span class="fn">_delete_leaf</span>(x)
+        <span class="cmt"># 父节点变为叶节点时也可驱逐</span>
+        <span class="kw">if</span> x.parent.lock_ref == <span class="num">0</span>:
+            heapq.<span class="fn">heappush</span>(heap, (priority, x.parent))</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">驱逐策略对比</div>
+      <table>
+        <tr><th>策略</th><th>优先级计算</th><th>适用场景</th></tr>
+        <tr><td><span class="badge badge-purple">LRU</span></td><td>last_access_time 越早 → 越先驱逐</td><td>默认，通用场景</td></tr>
+        <tr><td><span class="badge badge-teal">LFU</span></td><td>hit_count 越少 → 越先驱逐</td><td>长期服务，热点前缀保护</td></tr>
+        <tr><td><span class="badge badge-orange">FIFO</span></td><td>creation_time 越早 → 越先驱逐</td><td>公平性场景</td></tr>
+        <tr><td><span class="badge badge-pink">Priority</span></td><td>node.priority 越低 → 越先驱逐</td><td>多租户，支持优先级差异</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- SECTION 8: Backends -->
+  <div class="section" id="backends">
+    <div class="section-title">多种 Radix Cache 实现</div>
+    <div class="section-subtitle">针对不同硬件和场景的特化版本</div>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-title">Python RadixCache</div>
+        <span class="badge badge-purple">radix_cache.py</span>
+        <p style="margin-top:10px">纯 Python 实现，逻辑清晰，支持全部驱逐策略。page_size=1（token 级）或更大（页级），lock_ref 精确管理。</p>
+        <ul>
+          <li>LRU / LFU / FIFO / Priority</li>
+          <li>页级 key 匹配</li>
+          <li>SHA256 内容哈希</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">C++ RadixCache</div>
+        <span class="badge badge-teal">radix_cache_cpp.py</span>
+        <p style="margin-top:10px">高性能 C++ 绑定，write-through 模式，支持层级缓存（GPU → CPU）。</p>
+        <ul>
+          <li>更低 Python overhead</li>
+          <li>分层 GPU/CPU 协同</li>
+          <li>Write-through 写入</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">特化版本</div>
+        <span class="badge badge-orange">变体实现</span>
+        <p style="margin-top:10px">针对特殊模型结构的专用缓存：</p>
+        <ul>
+          <li><strong>SWARadixCache</strong>：滑动窗口 attention</li>
+          <li><strong>MambaRadixCache</strong>：SSM 状态跟踪</li>
+          <li><strong>HiRadixCache</strong>：层级存储后端</li>
+          <li><strong>DoubleSparsityCache</strong>：稀疏 attention</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="diagram-container" style="margin-top: 20px">
+      <svg viewBox="0 0 1200 200" xmlns="http://www.w3.org/2000/svg">
+        <text x="600" y="22" text-anchor="middle" fill="#5eead4" font-size="13" font-weight="bold">关键文件路径总览</text>
+
+        <rect x="20" y="40" width="250" height="145" rx="8" fill="#0a0c14" stroke="#7c6af7" stroke-width="1.5"/>
+        <text x="145" y="60" text-anchor="middle" fill="#7c6af7" font-size="10" font-weight="bold">Attention Layer</text>
+        <text x="30" y="80" fill="#8892a4" font-size="8">layers/radix_attention.py</text>
+        <text x="30" y="96" fill="#8892a4" font-size="8">layers/attention/flashinfer_backend.py</text>
+        <text x="30" y="112" fill="#8892a4" font-size="8">layers/attention/triton_backend.py</text>
+        <text x="30" y="128" fill="#8892a4" font-size="8">layers/attention/triton_ops/</text>
+        <text x="42" y="144" fill="#5c6370" font-size="8">  extend_attention.py</text>
+        <text x="42" y="158" fill="#5c6370" font-size="8">  decode_attention.py</text>
+        <text x="30" y="174" fill="#8892a4" font-size="8">layers/attention/aot_triton/</text>
+
+        <rect x="290" y="40" width="250" height="145" rx="8" fill="#0a0c14" stroke="#f97316" stroke-width="1.5"/>
+        <text x="415" y="60" text-anchor="middle" fill="#f97316" font-size="10" font-weight="bold">Memory Cache</text>
+        <text x="300" y="80" fill="#8892a4" font-size="8">mem_cache/radix_cache.py</text>
+        <text x="300" y="96" fill="#8892a4" font-size="8">mem_cache/radix_cache_cpp.py</text>
+        <text x="300" y="112" fill="#8892a4" font-size="8">mem_cache/base_prefix_cache.py</text>
+        <text x="300" y="128" fill="#8892a4" font-size="8">mem_cache/swa_radix_cache.py</text>
+        <text x="300" y="144" fill="#8892a4" font-size="8">mem_cache/mamba_radix_cache.py</text>
+        <text x="300" y="160" fill="#8892a4" font-size="8">mem_cache/hiradix_cache.py</text>
+        <text x="300" y="176" fill="#8892a4" font-size="8">mem_cache/cpp_radix_tree/</text>
+
+        <rect x="560" y="40" width="250" height="145" rx="8" fill="#0a0c14" stroke="#ec4899" stroke-width="1.5"/>
+        <text x="685" y="60" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="bold">Model Executor</text>
+        <text x="570" y="80" fill="#8892a4" font-size="8">model_executor/forward_batch_info.py</text>
+        <text x="570" y="96" fill="#8892a4" font-size="8">model_executor/model_runner.py</text>
+        <text x="570" y="112" fill="#8892a4" font-size="8">model_executor/cuda_graph_runner.py</text>
+
+        <rect x="830" y="40" width="250" height="145" rx="8" fill="#0a0c14" stroke="#5eead4" stroke-width="1.5"/>
+        <text x="955" y="60" text-anchor="middle" fill="#5eead4" font-size="10" font-weight="bold">Scheduler</text>
+        <text x="840" y="80" fill="#8892a4" font-size="8">managers/schedule_batch.py</text>
+        <text x="840" y="96" fill="#8892a4" font-size="8">managers/scheduler.py</text>
+        <text x="840" y="112" fill="#8892a4" font-size="8">managers/tp_worker.py</text>
+        <text x="840" y="128" fill="#8892a4" font-size="8">managers/detokenizer_manager.py</text>
+
+        <!-- Connection arrows -->
+        <line x1="270" y1="112" x2="286" y2="112" stroke="#2e3147" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="540" y1="112" x2="556" y2="112" stroke="#2e3147" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="810" y1="112" x2="826" y2="112" stroke="#2e3147" stroke-width="1" marker-end="url(#arrow)"/>
+      </svg>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function switchTab(btn, id) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-' + id).classList.add('active');
+}
+</script>
+
+<footer style="text-align:center;padding:40px;color:#5c6370;font-size:0.85rem;border-top:1px solid #2e3147;margin-top:20px">
+  SGLang Tree Attention 实现详解 | 基于 SGLang 源码分析 | 数据来源: python/sglang/srt/
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang Tree Decoding (Speculative Sampling) 深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117; --bg2: #161b27; --bg3: #1e2535;
+    --border: #2d3748; --accent: #4f8ef7; --accent2: #56d364;
+    --accent3: #f7c948; --accent4: #f87171; --accent5: #c084fc;
+    --text: #e2e8f0; --text2: #94a3b8; --text3: #64748b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.6; }
+  .hero { background: linear-gradient(135deg, #0f1117 0%, #1a2040 50%, #0f1117 100%); border-bottom: 1px solid var(--border); padding: 60px 40px 40px; text-align: center; position: relative; overflow: hidden; }
+  .hero::before { content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(ellipse at center, rgba(79,142,247,0.08) 0%, transparent 70%); animation: pulse 4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:0.5} 50%{opacity:1} }
+  .hero h1 { font-size: 2.4rem; font-weight: 800; background: linear-gradient(135deg, #4f8ef7, #c084fc, #56d364); -webkit-background-clip: text; -webkit-text-fill-color: transparent; position: relative; margin-bottom: 16px; }
+  .hero p { color: var(--text2); font-size: 1.1rem; position: relative; }
+  .nav { position: sticky; top: 0; background: rgba(15,17,23,0.95); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); z-index: 100; padding: 0 40px; display: flex; gap: 0; overflow-x: auto; }
+  .nav a { color: var(--text2); text-decoration: none; padding: 14px 18px; font-size: 0.875rem; font-weight: 500; border-bottom: 2px solid transparent; white-space: nowrap; transition: all 0.2s; }
+  .nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
+  .container { max-width: 1200px; margin: 0 auto; padding: 40px; }
+  section { margin-bottom: 60px; }
+  h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+  h2 .num { background: linear-gradient(135deg, var(--accent), var(--accent5)); width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; font-weight: 800; flex-shrink: 0; }
+  h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  p { color: var(--text2); margin-bottom: 12px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+  .card-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 20px; }
+  .code { background: #0d1117; border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: 'Cascadia Code', 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.7; overflow-x: auto; white-space: pre; }
+  .kw { color: #c084fc; } .str { color: #56d364; } .num-lit { color: #f7c948; } .cmt { color: #64748b; font-style: italic; } .fn { color: #4f8ef7; } .cls { color: #fb923c; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
+  .badge-blue { background: rgba(79,142,247,0.15); color: #4f8ef7; border: 1px solid rgba(79,142,247,0.3); }
+  .badge-green { background: rgba(86,211,100,0.15); color: #56d364; border: 1px solid rgba(86,211,100,0.3); }
+  .callout { border-left: 3px solid var(--accent); background: rgba(79,142,247,0.08); border-radius: 0 8px 8px 0; padding: 12px 16px; margin-bottom: 16px; color: var(--text2); font-size: 0.9rem; }
+  .callout.green { border-left-color: var(--accent2); background: rgba(86,211,100,0.08); }
+  .callout.yellow { border-left-color: var(--accent3); background: rgba(247,201,72,0.08); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  th { background: var(--bg3); padding: 10px 14px; text-align: left; font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text2); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  code { background: var(--bg3); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.85em; color: #fb923c; }
+  svg text { font-family: 'Segoe UI', sans-serif; }
+</style>
+</head>
+<body>
+<div class="hero">
+  <h1>SGLang Tree Decoding 深度解析</h1>
+  <p>EAGLE 投机采样 &middot; topk &gt; 1 树形解码 &middot; CUDA 加速验证</p>
+</div>
+<nav class="nav">
+  <a href="#overview">总览</a>
+  <a href="#pipeline">三阶段流水线</a>
+  <a href="#tree-structure">树形结构</a>
+  <a href="#data-structures">数据结构</a>
+  <a href="#draft-phase">Draft 阶段</a>
+  <a href="#build-tree">树构建 CUDA</a>
+  <a href="#verify-phase">Verify 阶段</a>
+  <a href="#attention-mask">Tree Mask</a>
+  <a href="#config">参数配置</a>
+</nav>
+<div class="container">
+
+<section id="overview">
+<h2><span class="num">01</span> 投机采样总览</h2>
+<p>投机采样的核心思路：用小的 <strong>草稿模型（Draft）</strong> 快速生成多个候选 token，再用大的<strong>目标模型（Target）</strong>一次性并行验证，从而提升吞吐量。当 <code>topk &gt; 1</code> 时，每步生成多个候选，形成一棵 <strong>token 树（Token Tree）</strong>，进一步提升接受率。</p>
+<div style="margin: 24px 0;">
+<svg viewBox="0 0 900 240" width="100%" style="max-width:900px;display:block;margin:0 auto;">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#4f8ef7"/></marker>
+    <marker id="arr-g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#56d364"/></marker>
+    <marker id="arr-y" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#f7c948"/></marker>
+  </defs>
+  <rect x="10" y="20" width="240" height="200" rx="12" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+  <rect x="330" y="20" width="240" height="200" rx="12" fill="#1e2535" stroke="#56d364" stroke-width="1.5"/>
+  <rect x="650" y="20" width="240" height="200" rx="12" fill="#1e2535" stroke="#f7c948" stroke-width="1.5"/>
+  <text x="130" y="48" text-anchor="middle" fill="#4f8ef7" font-weight="700" font-size="14">Phase 1: DRAFT</text>
+  <text x="450" y="48" text-anchor="middle" fill="#56d364" font-weight="700" font-size="14">Phase 2: VERIFY</text>
+  <text x="770" y="48" text-anchor="middle" fill="#f7c948" font-weight="700" font-size="14">Phase 3: EXTEND</text>
+  <rect x="40" y="65" width="180" height="30" rx="6" fill="#0d1117" stroke="#4f8ef7" stroke-width="1"/>
+  <text x="130" y="85" text-anchor="middle" fill="#e2e8f0" font-size="11">EAGLE 草稿模型</text>
+  <text x="130" y="112" text-anchor="middle" fill="#94a3b8" font-size="10">多步自回归前向</text>
+  <text x="130" y="130" text-anchor="middle" fill="#94a3b8" font-size="10">每步生成 topk 候选</text>
+  <text x="130" y="148" text-anchor="middle" fill="#94a3b8" font-size="10">构建候选 Token 树</text>
+  <rect x="60" y="168" width="140" height="26" rx="5" fill="rgba(79,142,247,0.15)" stroke="rgba(79,142,247,0.4)" stroke-width="1"/>
+  <text x="130" y="185" text-anchor="middle" fill="#4f8ef7" font-size="10">输出: EagleVerifyInput</text>
+  <rect x="360" y="65" width="180" height="30" rx="6" fill="#0d1117" stroke="#56d364" stroke-width="1"/>
+  <text x="450" y="85" text-anchor="middle" fill="#e2e8f0" font-size="11">目标大模型 (LLM)</text>
+  <text x="450" y="112" text-anchor="middle" fill="#94a3b8" font-size="10">并行验证所有草稿 token</text>
+  <text x="450" y="130" text-anchor="middle" fill="#94a3b8" font-size="10">Tree Attention Mask</text>
+  <text x="450" y="148" text-anchor="middle" fill="#94a3b8" font-size="10">Rejection Sampling</text>
+  <rect x="372" y="168" width="156" height="26" rx="5" fill="rgba(86,211,100,0.15)" stroke="rgba(86,211,100,0.4)" stroke-width="1"/>
+  <text x="450" y="185" text-anchor="middle" fill="#56d364" font-size="10">输出: 接受的 token 序列</text>
+  <rect x="680" y="65" width="180" height="30" rx="6" fill="#0d1117" stroke="#f7c948" stroke-width="1"/>
+  <text x="770" y="85" text-anchor="middle" fill="#e2e8f0" font-size="11">草稿模型 Extend</text>
+  <text x="770" y="112" text-anchor="middle" fill="#94a3b8" font-size="10">基于接受的 token</text>
+  <text x="770" y="130" text-anchor="middle" fill="#94a3b8" font-size="10">更新 KV Cache</text>
+  <text x="770" y="148" text-anchor="middle" fill="#94a3b8" font-size="10">准备下轮草稿</text>
+  <rect x="690" y="168" width="160" height="26" rx="5" fill="rgba(247,201,72,0.15)" stroke="rgba(247,201,72,0.4)" stroke-width="1"/>
+  <text x="770" y="185" text-anchor="middle" fill="#f7c948" font-size="10">输出: EagleDraftInput</text>
+  <line x1="254" y1="120" x2="326" y2="120" stroke="#4f8ef7" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="574" y1="120" x2="646" y2="120" stroke="#56d364" stroke-width="2" marker-end="url(#arr-g)"/>
+  <path d="M770,200 Q770,228 450,228 Q130,228 130,200" fill="none" stroke="#f7c948" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr-y)"/>
+  <text x="450" y="222" text-anchor="middle" fill="#f7c948" font-size="9">循环直到 EOS</text>
+</svg>
+</div>
+<div class="card-grid">
+  <div class="card">
+    <h3>为什么用树形解码？</h3>
+    <p>线性投机采样（topk=1）每步只生成一个候选，若被拒绝则浪费。树形解码每步生成多个候选，增加验证命中率。</p>
+    <div class="callout green">topk=4, depth=3 时最多可验证 21 个 token，只需 1 次目标模型前向！</div>
+  </div>
+  <div class="card">
+    <h3>EAGLE 的特点</h3>
+    <p>EAGLE 草稿模型利用目标模型的 <strong>hidden states</strong> 作为额外输入，大幅提升 draft 精度。EAGLE3 进一步改进了特征聚合方式。</p>
+    <div class="callout">Shared LM Head：草稿模型与目标模型共享词表头，节省显存并保证概率空间一致。</div>
+  </div>
+</div>
+</section>
+
+<section id="pipeline">
+<h2><span class="num">02</span> 三阶段详细流水线</h2>
+<div class="card">
+<svg viewBox="0 0 860 420" width="100%" style="display:block;margin:0 auto;">
+  <defs>
+    <marker id="pa" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#4f8ef7"/></marker>
+    <marker id="pb" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#64748b"/></marker>
+  </defs>
+  <text x="30" y="28" fill="#4f8ef7" font-weight="700" font-size="13">DRAFT Phase — eagle_worker.py</text>
+  <rect x="20" y="38" width="395" height="50" rx="8" fill="#0d1117" stroke="#4f8ef7" stroke-width="1"/>
+  <text x="40" y="58" fill="#c084fc" font-size="11" font-family="monospace">EAGLEWorker.draft()</text>
+  <text x="40" y="76" fill="#94a3b8" font-size="10">  &#8627; draft_forward() — N 步自回归，每步调用 select_top_k_tokens() + fast_topk()</text>
+  <rect x="20" y="100" width="395" height="36" rx="8" fill="#0d1117" stroke="#2d3748"/>
+  <text x="40" y="118" fill="#c084fc" font-size="11" font-family="monospace">organize_draft_results()</text>
+  <text x="40" y="130" fill="#94a3b8" font-size="10">  对多步结果排序，选出 num_draft_tokens 个最佳候选</text>
+  <rect x="20" y="148" width="395" height="36" rx="8" fill="#0d1117" stroke="#2d3748"/>
+  <text x="40" y="166" fill="#c084fc" font-size="11" font-family="monospace">build_tree_kernel_efficient() [CUDA]</text>
+  <text x="40" y="178" fill="#94a3b8" font-size="10">  构建树掩码、位置编码、邻接表指针（eagle_utils.cu）</text>
+  <rect x="20" y="196" width="395" height="28" rx="6" fill="rgba(79,142,247,0.12)" stroke="rgba(79,142,247,0.4)" stroke-width="1"/>
+  <text x="218" y="215" text-anchor="middle" fill="#4f8ef7" font-size="11" font-weight="600">&#8594; 输出 EagleVerifyInput</text>
+
+  <text x="460" y="28" fill="#56d364" font-weight="700" font-size="13">VERIFY Phase — eagle_info.py</text>
+  <rect x="450" y="38" width="395" height="50" rx="8" fill="#0d1117" stroke="#56d364" stroke-width="1"/>
+  <text x="470" y="58" fill="#c084fc" font-size="11" font-family="monospace">EagleVerifyInput.verify()</text>
+  <text x="470" y="76" fill="#94a3b8" font-size="10">  目标模型并行前向（Tree Attention），得到所有草稿位置的 logits</text>
+  <rect x="450" y="100" width="395" height="50" rx="8" fill="#0d1117" stroke="#2d3748"/>
+  <text x="470" y="120" fill="#c084fc" font-size="11" font-family="monospace">tree_speculative_sampling_target_only() [CUDA]</text>
+  <text x="470" y="138" fill="#94a3b8" font-size="10">  DFS 遍历候选树，逐层 Rejection Sampling，bonus token 采样</text>
+  <rect x="450" y="162" width="395" height="28" rx="6" fill="rgba(86,211,100,0.12)" stroke="rgba(86,211,100,0.4)" stroke-width="1"/>
+  <text x="648" y="181" text-anchor="middle" fill="#56d364" font-size="11" font-weight="600">&#8594; 接受的 token 序列 + EagleDraftInput</text>
+
+  <text x="460" y="240" fill="#f7c948" font-weight="700" font-size="13">EXTEND Phase — eagle_worker.py</text>
+  <rect x="450" y="250" width="395" height="50" rx="8" fill="#0d1117" stroke="#f7c948" stroke-width="1"/>
+  <text x="470" y="270" fill="#c084fc" font-size="11" font-family="monospace">forward_draft_extend_after_decode()</text>
+  <text x="470" y="288" fill="#94a3b8" font-size="10">  对被接受的 token 运行草稿模型，提取 hidden states 和 topk 概率</text>
+  <rect x="450" y="312" width="395" height="28" rx="6" fill="rgba(247,201,72,0.12)" stroke="rgba(247,201,72,0.4)" stroke-width="1"/>
+  <text x="648" y="331" text-anchor="middle" fill="#f7c948" font-size="11" font-weight="600">&#8594; 更新 EagleDraftInput，进入下一轮循环</text>
+
+  <line x1="218" y1="226" x2="448" y2="182" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#pb)"/>
+  <text x="330" y="218" fill="#64748b" font-size="9" text-anchor="middle">EagleVerifyInput</text>
+</svg>
+</div>
+</section>
+
+<section id="tree-structure">
+<h2><span class="num">03</span> Token 树形结构（topk=2, depth=3）</h2>
+<p>当 <code>speculative-eagle-topk=2</code>，<code>speculative-num-steps=3</code> 时，Draft 阶段构建如下的候选树：</p>
+<div class="card" style="padding:0;overflow:hidden;">
+<svg viewBox="0 0 860 390" width="100%" style="display:block;">
+  <rect x="0" y="0" width="860" height="390" fill="#0d1117"/>
+  <text x="430" y="26" text-anchor="middle" fill="#94a3b8" font-size="12">候选 Token 树（topk=2，depth=3，共 7 个节点）</text>
+  <text x="80" y="62" fill="#64748b" font-size="10">上轮接受 &#8594;</text>
+  <circle cx="210" cy="58" r="24" fill="#1e2535" stroke="#f7c948" stroke-width="2"/>
+  <text x="210" y="54" text-anchor="middle" fill="#f7c948" font-size="10" font-weight="700">verified</text>
+  <text x="210" y="68" text-anchor="middle" fill="#f7c948" font-size="9">_id (0)</text>
+  <text x="210" y="99" text-anchor="middle" fill="#64748b" font-size="9">depth=0 (root)</text>
+  <text x="30" y="176" fill="#64748b" font-size="10">Step 1</text>
+  <text x="30" y="190" fill="#64748b" font-size="10">(topk=2)</text>
+  <circle cx="340" cy="176" r="24" fill="#1a2a4a" stroke="#4f8ef7" stroke-width="2"/>
+  <text x="340" y="172" text-anchor="middle" fill="#4f8ef7" font-size="11" font-weight="600">T&#8321;</text>
+  <text x="340" y="186" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=1, p=0.6</text>
+  <circle cx="580" cy="176" r="24" fill="#1a2a4a" stroke="#4f8ef7" stroke-width="2"/>
+  <text x="580" y="172" text-anchor="middle" fill="#4f8ef7" font-size="11" font-weight="600">T&#8322;</text>
+  <text x="580" y="186" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=2, p=0.3</text>
+  <text x="30" y="296" fill="#64748b" font-size="10">Step 2</text>
+  <text x="30" y="310" fill="#64748b" font-size="10">(topk=2)</text>
+  <circle cx="230" cy="296" r="22" fill="#1a2a4a" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="230" y="292" text-anchor="middle" fill="#4f8ef7" font-size="10">T&#8323;</text>
+  <text x="230" y="306" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=3</text>
+  <circle cx="440" cy="296" r="22" fill="#1a2a4a" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="440" y="292" text-anchor="middle" fill="#4f8ef7" font-size="10">T&#8324;</text>
+  <text x="440" y="306" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=4</text>
+  <circle cx="570" cy="296" r="22" fill="#1a2a4a" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="570" y="292" text-anchor="middle" fill="#4f8ef7" font-size="10">T&#8325;</text>
+  <text x="570" y="306" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=5</text>
+  <circle cx="720" cy="296" r="22" fill="#1a2a4a" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="720" y="292" text-anchor="middle" fill="#4f8ef7" font-size="10">T&#8326;</text>
+  <text x="720" y="306" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=6</text>
+  <line x1="228" y1="76" x2="320" y2="155" stroke="#4f8ef7" stroke-width="1.5" opacity="0.5"/>
+  <line x1="228" y1="76" x2="562" y2="155" stroke="#4f8ef7" stroke-width="1.5" opacity="0.5"/>
+  <line x1="362" y1="196" x2="418" y2="276" stroke="#4f8ef7" stroke-width="1.2" opacity="0.5"/>
+  <line x1="560" y1="196" x2="556" y2="276" stroke="#4f8ef7" stroke-width="1.2" opacity="0.5"/>
+  <line x1="600" y1="196" x2="702" y2="276" stroke="#4f8ef7" stroke-width="1.2" opacity="0.5"/>
+  <line x1="228" y1="76" x2="320" y2="155" stroke="#56d364" stroke-width="3" opacity="0.9"/>
+  <line x1="320" y1="197" x2="214" y2="276" stroke="#56d364" stroke-width="3" opacity="0.9"/>
+  <circle cx="340" cy="176" r="24" fill="rgba(86,211,100,0.15)" stroke="#56d364" stroke-width="2.5"/>
+  <circle cx="230" cy="296" r="22" fill="rgba(86,211,100,0.15)" stroke="#56d364" stroke-width="2.5"/>
+  <text x="274" y="148" fill="#56d364" font-size="9">&#10003; 接受</text>
+  <text x="264" y="256" fill="#56d364" font-size="9">&#10003; 接受</text>
+  <text x="496" y="140" fill="#f87171" font-size="9">&#10007; 拒绝</text>
+  <rect x="768" y="60" width="82" height="220" rx="8" fill="#1e2535" stroke="#2d3748" stroke-width="1"/>
+  <text x="809" y="80" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">邻接表</text>
+  <text x="809" y="98" text-anchor="middle" fill="#94a3b8" font-size="8">next_token</text>
+  <line x1="780" y1="104" x2="838" y2="104" stroke="#2d3748" stroke-width="1"/>
+  <text x="809" y="120" text-anchor="middle" fill="#f7c948" font-size="9">0 &#8594; 1</text>
+  <text x="809" y="138" text-anchor="middle" fill="#4f8ef7" font-size="9">1 &#8594; 3</text>
+  <text x="809" y="156" text-anchor="middle" fill="#4f8ef7" font-size="9">2 &#8594; 5</text>
+  <text x="809" y="174" text-anchor="middle" fill="#64748b" font-size="9">3 &#8594; -1</text>
+  <line x1="780" y1="180" x2="838" y2="180" stroke="#2d3748" stroke-width="1"/>
+  <text x="809" y="196" text-anchor="middle" fill="#94a3b8" font-size="8">next_sibling</text>
+  <text x="809" y="214" text-anchor="middle" fill="#c084fc" font-size="9">1 &#8594; 2</text>
+  <text x="809" y="232" text-anchor="middle" fill="#c084fc" font-size="9">3 &#8594; 4</text>
+  <text x="809" y="250" text-anchor="middle" fill="#c084fc" font-size="9">5 &#8594; 6</text>
+  <text x="430" y="354" text-anchor="middle" fill="#56d364" font-size="11">绿色路径：root &#8594; T&#8321; &#8594; T&#8323;（被目标模型验证接受）</text>
+  <text x="430" y="374" text-anchor="middle" fill="#94a3b8" font-size="10">仅需 1 次目标模型前向即可并行验证所有 7 个候选节点</text>
+</svg>
+</div>
+<div class="callout yellow" style="margin-top:16px;">
+<strong>树大小公式：</strong> nodes = (topk^depth - 1) / (topk - 1)。topk=4, depth=3 时最多 21 个节点；通过 <code>--speculative-num-draft-tokens</code> 限制实际使用数量（如 16）。
+</div>
+</section>
+
+<section id="data-structures">
+<h2><span class="num">04</span> 核心数据结构</h2>
+<div class="card-grid">
+<div class="card">
+  <h3><span class="badge badge-blue">Draft 输入</span> EagleDraftInput</h3>
+  <p style="font-size:0.8rem;color:#64748b;margin-bottom:10px;">eagle_info.py : L617</p>
+  <div class="code"><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="cls">EagleDraftInput</span>(<span class="cls">SpecInput</span>):
+  <span class="cmt"># 目标模型的隐藏态（喂给草稿模型）</span>
+  <span class="fn">hidden_states</span>: Tensor  <span class="cmt"># (b, hidden_size)</span>
+  <span class="fn">topk_p</span>: Tensor          <span class="cmt"># (b, topk) 上一步概率</span>
+  <span class="fn">topk_index</span>: Tensor      <span class="cmt"># (b, topk) 上一步 token</span>
+
+  <span class="cmt"># 上一轮验证接受的 token</span>
+  <span class="fn">verified_id</span>: Tensor      <span class="cmt"># (b,)</span>
+  <span class="fn">accept_length</span>: Tensor    <span class="cmt"># (b,)</span>
+  <span class="fn">accept_length_cpu</span>: List[<span class="cls">int</span>]
+
+  <span class="cmt"># KV Cache 分页管理</span>
+  <span class="fn">kv_indptr</span>: Tensor   <span class="cmt"># 分页 KV 指针</span>
+  <span class="fn">kv_indices</span>: Tensor  <span class="cmt"># KV 缓存块索引</span></div>
+</div>
+<div class="card">
+  <h3><span class="badge badge-green">Verify 输入</span> EagleVerifyInput</h3>
+  <p style="font-size:0.8rem;color:#64748b;margin-bottom:10px;">eagle_info.py : L54</p>
+  <div class="code"><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="cls">EagleVerifyInput</span>(<span class="cls">SpecInput</span>):
+  <span class="cmt"># 候选 draft token（树的所有节点）</span>
+  <span class="fn">draft_token</span>: Tensor  <span class="cmt"># (bs * draft_token_num,)</span>
+  <span class="fn">custom_mask</span>: Tensor  <span class="cmt"># 每个节点的可见性</span>
+  <span class="fn">positions</span>: Tensor    <span class="cmt"># (bs, draft_token_num)</span>
+
+  <span class="cmt"># 树邻接表（DFS 遍历用）</span>
+  <span class="fn">retrive_index</span>: Tensor        <span class="cmt"># 节点全局索引</span>
+  <span class="fn">retrive_next_token</span>: Tensor   <span class="cmt"># 第一个子节点</span>
+  <span class="fn">retrive_next_sibling</span>: Tensor <span class="cmt"># 下一个兄弟节点</span>
+
+  <span class="fn">spec_steps</span>: <span class="cls">int</span>       <span class="cmt"># 树深度</span>
+  <span class="fn">topk</span>: <span class="cls">int</span>             <span class="cmt"># 分支因子</span>
+  <span class="fn">draft_token_num</span>: <span class="cls">int</span>  <span class="cmt"># 最大节点数</span></div>
+</div>
+</div>
+
+<div class="card">
+  <h3>邻接表表示（first-child + next-sibling 双指针）</h3>
+  <svg viewBox="0 0 820 200" width="100%" style="display:block;">
+    <text x="30" y="28" fill="#94a3b8" font-size="11" font-weight="600">树结构</text>
+    <circle cx="130" cy="70" r="22" fill="#1e2535" stroke="#f7c948" stroke-width="2"/>
+    <text x="130" y="66" text-anchor="middle" fill="#f7c948" font-size="10" font-weight="700">root</text>
+    <text x="130" y="80" text-anchor="middle" fill="#f7c948" font-size="9">idx=0</text>
+    <circle cx="60" cy="155" r="19" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+    <text x="60" y="151" text-anchor="middle" fill="#4f8ef7" font-size="10">T&#8321;</text>
+    <text x="60" y="165" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=1</text>
+    <circle cx="190" cy="155" r="19" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+    <text x="190" y="151" text-anchor="middle" fill="#4f8ef7" font-size="10">T&#8322;</text>
+    <text x="190" y="165" text-anchor="middle" fill="#4f8ef7" font-size="9">idx=2</text>
+    <line x1="112" y1="87" x2="74" y2="138" stroke="#56d364" stroke-width="1.5"/>
+    <text x="86" y="118" fill="#56d364" font-size="8">first-child</text>
+    <line x1="148" y1="87" x2="176" y2="138" stroke="#4f8ef7" stroke-width="1.5" opacity="0.6"/>
+    <path d="M79,148 Q125,132 170,148" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="4,2"/>
+    <text x="125" y="132" text-anchor="middle" fill="#c084fc" font-size="8">next-sibling</text>
+    <text x="300" y="28" fill="#94a3b8" font-size="11" font-weight="600">邻接表数据（batch_size=1）</text>
+    <rect x="290" y="38" width="510" height="150" rx="8" fill="#0d1117" stroke="#2d3748" stroke-width="1"/>
+    <rect x="290" y="38" width="510" height="28" rx="8" fill="#1e2535"/>
+    <text x="366" y="57" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">节点 idx</text>
+    <text x="490" y="57" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">retrive_next_token（第一个子节点）</text>
+    <text x="722" y="57" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">retrive_next_sibling（下一兄弟）</text>
+    <text x="366" y="83" text-anchor="middle" fill="#f7c948" font-size="9">0 (root)</text>
+    <text x="490" y="83" text-anchor="middle" fill="#56d364" font-size="9">1 (T&#8321;)</text>
+    <text x="722" y="83" text-anchor="middle" fill="#64748b" font-size="9">-1 (root 无兄弟)</text>
+    <text x="366" y="103" text-anchor="middle" fill="#4f8ef7" font-size="9">1 (T&#8321;)</text>
+    <text x="490" y="103" text-anchor="middle" fill="#56d364" font-size="9">3 (T&#8323;)</text>
+    <text x="722" y="103" text-anchor="middle" fill="#c084fc" font-size="9">2 (T&#8322; — 右兄弟)</text>
+    <text x="366" y="123" text-anchor="middle" fill="#4f8ef7" font-size="9">2 (T&#8322;)</text>
+    <text x="490" y="123" text-anchor="middle" fill="#56d364" font-size="9">5 (T&#8325;)</text>
+    <text x="722" y="123" text-anchor="middle" fill="#64748b" font-size="9">-1</text>
+    <text x="366" y="143" text-anchor="middle" fill="#4f8ef7" font-size="9">3 (T&#8323;)</text>
+    <text x="490" y="143" text-anchor="middle" fill="#64748b" font-size="9">-1 (叶节点)</text>
+    <text x="722" y="143" text-anchor="middle" fill="#c084fc" font-size="9">4 (T&#8324;)</text>
+    <text x="366" y="175" text-anchor="middle" fill="#64748b" font-size="8">shape: (b, draft_token_num)</text>
+    <line x1="420" y1="38" x2="420" y2="188" stroke="#2d3748" stroke-width="1"/>
+    <line x1="624" y1="38" x2="624" y2="188" stroke="#2d3748" stroke-width="1"/>
+  </svg>
+  <p style="font-size:0.875rem;">DFS 验证时先走 <code>retrive_next_token</code> 深入子节点；若拒绝则走 <code>retrive_next_sibling</code> 换分支；若两者均为 -1 则终止。</p>
+</div>
+</section>
+
+<section id="draft-phase">
+<h2><span class="num">05</span> Draft 阶段：多步展开与 topk 剪枝</h2>
+<div class="card">
+  <h3>select_top_k_tokens 展开逻辑（spec_utils.py : L465）</h3>
+  <svg viewBox="0 0 820 290" width="100%" style="display:block;">
+    <text x="30" y="22" fill="#94a3b8" font-size="11" font-weight="600">Step i=0（第一步）</text>
+    <rect x="10" y="32" width="800" height="60" rx="8" fill="#0d1117" stroke="#2d3748"/>
+    <rect x="70" y="40" width="140" height="26" rx="4" fill="#1e2535" stroke="#4f8ef7" stroke-width="1"/>
+    <text x="140" y="57" text-anchor="middle" fill="#4f8ef7" font-size="9">topk_p  (b, topk)</text>
+    <rect x="220" y="40" width="150" height="26" rx="4" fill="#1e2535" stroke="#4f8ef7" stroke-width="1"/>
+    <text x="295" y="57" text-anchor="middle" fill="#4f8ef7" font-size="9">topk_index  (b, topk)</text>
+    <rect x="380" y="40" width="170" height="26" rx="4" fill="#1e2535" stroke="#4f8ef7" stroke-width="1"/>
+    <text x="465" y="57" text-anchor="middle" fill="#4f8ef7" font-size="9">hidden_states  (b, hidden_size)</text>
+    <text x="564" y="57" fill="#64748b" font-size="12">&#8594;</text>
+    <rect x="580" y="40" width="220" height="26" rx="4" fill="rgba(86,211,100,0.1)" stroke="#56d364" stroke-width="1"/>
+    <text x="690" y="53" text-anchor="middle" fill="#56d364" font-size="9">input_ids = topk_index.flatten()</text>
+    <text x="690" y="65" text-anchor="middle" fill="#56d364" font-size="8">(b*topk,)</text>
+    <text x="30" y="82" fill="#94a3b8" font-size="9">&#8226; hidden_states.repeat_interleave(topk) — 复制 topk 份与每个候选 token 配对</text>
+
+    <text x="30" y="118" fill="#94a3b8" font-size="11" font-weight="600">Step i&gt;0（后续步骤：全局 topk 剪枝，beam search 策略）</text>
+    <rect x="10" y="128" width="800" height="108" rx="8" fill="#0d1117" stroke="#2d3748"/>
+    <rect x="30" y="140" width="120" height="26" rx="4" fill="#1e2535" stroke="#c084fc" stroke-width="1"/>
+    <text x="90" y="157" text-anchor="middle" fill="#c084fc" font-size="9">scores (b, topk)</text>
+    <text x="162" y="157" fill="#94a3b8" font-size="12">&#x2297;</text>
+    <rect x="178" y="140" width="150" height="26" rx="4" fill="#1e2535" stroke="#c084fc" stroke-width="1"/>
+    <text x="253" y="157" text-anchor="middle" fill="#c084fc" font-size="9">topk_p (b, topk, topk)</text>
+    <text x="340" y="157" fill="#94a3b8" font-size="12">&#8594;</text>
+    <rect x="358" y="140" width="170" height="26" rx="4" fill="#1e2535" stroke="#f7c948" stroke-width="1"/>
+    <text x="443" y="153" text-anchor="middle" fill="#f7c948" font-size="9">expand_scores (b, topk&#178;)</text>
+    <text x="443" y="165" text-anchor="middle" fill="#f7c948" font-size="8">父节点概率 &#215; 当前概率</text>
+    <text x="542" y="153" fill="#94a3b8" font-size="9">fast_topk</text>
+    <text x="542" y="165" fill="#94a3b8" font-size="8">取 topk 个</text>
+    <rect x="620" y="140" width="170" height="26" rx="4" fill="rgba(86,211,100,0.1)" stroke="#56d364" stroke-width="1"/>
+    <text x="705" y="157" text-anchor="middle" fill="#56d364" font-size="9">Top-k 路径 (b, topk)</text>
+    <text x="30" y="198" fill="#94a3b8" font-size="9">&#8226; expand_scores[b,i,j] = scores[b,i] &#215; topk_p[b, i*topk+j]  — beam search 累积概率剪枝</text>
+    <text x="30" y="213" fill="#94a3b8" font-size="9">&#8226; 从 topk&#178; 中选 topk 个，丢弃低概率路径，记录父节点索引 (topk_cs_index // topk)</text>
+    <text x="30" y="228" fill="#94a3b8" font-size="9">&#8226; 仅保留被选中节点的 hidden_states，其余丢弃（节省显存）</text>
+    <rect x="10" y="244" width="78" height="20" rx="3" fill="rgba(86,211,100,0.25)" stroke="#56d364"/>
+    <text x="49" y="258" text-anchor="middle" fill="#56d364" font-size="9">0.36 &#10003;</text>
+    <rect x="96" y="244" width="78" height="20" rx="3" fill="rgba(86,211,100,0.25)" stroke="#56d364"/>
+    <text x="135" y="258" text-anchor="middle" fill="#56d364" font-size="9">0.24 &#10003;</text>
+    <rect x="182" y="244" width="78" height="20" rx="3" fill="rgba(248,113,113,0.1)" stroke="#f87171" stroke-dasharray="3,2"/>
+    <text x="221" y="258" text-anchor="middle" fill="#f87171" font-size="9">0.18 &#10007;</text>
+    <rect x="268" y="244" width="78" height="20" rx="3" fill="rgba(248,113,113,0.1)" stroke="#f87171" stroke-dasharray="3,2"/>
+    <text x="307" y="258" text-anchor="middle" fill="#f87171" font-size="9">0.12 &#10007;</text>
+    <text x="360" y="258" fill="#64748b" font-size="9">&#8592; topk=2，topk&#178;=4 个候选中取 Top-2</text>
+  </svg>
+</div>
+<div class="code"><span class="cmt"># spec_utils.py: select_top_k_tokens 核心逻辑</span>
+<span class="kw">if</span> i == <span class="num-lit">0</span>:
+    input_ids = topk_index.flatten()  <span class="cmt"># (b*topk,)</span>
+    hidden_states = hidden_states.<span class="fn">repeat_interleave</span>(topk, dim=<span class="num-lit">0</span>)
+    scores = topk_p  <span class="cmt"># (b, topk)</span>
+<span class="kw">else</span>:
+    <span class="cmt"># 累积概率剪枝：保留全局最优的 topk 条路径</span>
+    expand_scores = torch.<span class="fn">mul</span>(
+        scores.<span class="fn">unsqueeze</span>(<span class="num-lit">2</span>),              <span class="cmt"># (b, topk, 1)</span>
+        topk_p.<span class="fn">reshape</span>(-<span class="num-lit">1</span>, topk, topk)  <span class="cmt"># (b, topk, topk)</span>
+    )  <span class="cmt"># -&gt; (b, topk, topk)</span>
+    topk_cs_p, topk_cs_index = <span class="fn">fast_topk</span>(
+        expand_scores.<span class="fn">flatten</span>(start_dim=<span class="num-lit">1</span>), topk, dim=-<span class="num-lit">1</span>
+    )  <span class="cmt"># 从 topk² 中选 topk 个</span>
+    input_ids = torch.<span class="fn">gather</span>(
+        topk_index.<span class="fn">reshape</span>(-<span class="num-lit">1</span>, topk**<span class="num-lit">2</span>), index=topk_cs_index, dim=<span class="num-lit">1</span>
+    ).<span class="fn">flatten</span>()
+    parent_index = topk_cs_index // topk  <span class="cmt"># 父节点在上一层的位置</span>
+    hidden_states = hidden_states[selected_input_index, :]
+    scores = topk_cs_p  <span class="cmt"># 更新为当前步的累积概率</span></div>
+</section>
+
+<section id="build-tree">
+<h2><span class="num">06</span> CUDA 树构建：build_tree_kernel_efficient</h2>
+<div class="card">
+  <p style="font-size:0.8rem;color:#64748b;margin-bottom:14px;">sgl-kernel/csrc/speculative/eagle_utils.cu : L34</p>
+  <svg viewBox="0 0 840 320" width="100%" style="display:block;">
+    <text x="30" y="22" fill="#94a3b8" font-size="12" font-weight="600">CUDA 线程组织：每个 block 处理一个 batch，每个 thread 处理一个 token（并行）</text>
+    <rect x="20" y="36" width="390" height="258" rx="10" fill="#0d1117" stroke="#4f8ef7" stroke-width="1.5"/>
+    <text x="215" y="56" text-anchor="middle" fill="#4f8ef7" font-size="11" font-weight="700">Block 0（batch_id=0）</text>
+    <rect x="40" y="66" width="350" height="44" rx="5" fill="#1a2535" stroke="#2d3748"/>
+    <text x="60" y="84" fill="#56d364" font-size="9">Thread tid=0 &#8594; 构建邻接表（串行遍历所有节点）</text>
+    <text x="60" y="98" fill="#94a3b8" font-size="8">   找父子关系，填充 retrive_next_token / next_sibling</text>
+    <rect x="40" y="120" width="350" height="62" rx="5" fill="#1a2535" stroke="#2d3748"/>
+    <text x="60" y="138" fill="#f7c948" font-size="9">Thread tid=1..N &#8594; 计算 position + tree_mask（并行）</text>
+    <text x="60" y="152" fill="#94a3b8" font-size="8">   从当前节点沿 parent 链回溯到 root，统计深度</text>
+    <text x="60" y="166" fill="#94a3b8" font-size="8">   position = prefix_len + depth</text>
+    <text x="60" y="178" fill="#94a3b8" font-size="8">   同时标记 tree_mask：祖先链上的节点置为可见</text>
+    <line x1="40" y1="196" x2="390" y2="196" stroke="#2d3748" stroke-width="1"/>
+    <text x="60" y="212" fill="#64748b" font-size="9">输入: parent_list, selected_index, verified_seq_len</text>
+    <text x="60" y="228" fill="#56d364" font-size="9">输出: tree_mask, positions</text>
+    <text x="60" y="244" fill="#56d364" font-size="9">       retrive_index, retrive_next_token, retrive_next_sibling</text>
+    <text x="60" y="260" fill="#56d364" font-size="9">       draft_tokens（prepend verified_id）</text>
+    <rect x="440" y="36" width="390" height="258" rx="10" fill="#0d1117" stroke="#c084fc" stroke-width="1.5"/>
+    <text x="635" y="56" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="700">Block 1（batch_id=1）</text>
+    <text x="635" y="168" text-anchor="middle" fill="#64748b" font-size="10">独立处理另一个请求的树</text>
+    <text x="635" y="186" text-anchor="middle" fill="#64748b" font-size="9">（与 Block 0 完全并行，无数据依赖）</text>
+    <text x="30" y="314" fill="#64748b" font-size="9">Python 侧通过 build_tree_kernel_efficient() 封装，调用前将 verified_id prepend 到 draft_tokens</text>
+  </svg>
+</div>
+<div class="code"><span class="cmt">// eagle_utils.cu: build_tree_efficient（简化）</span>
+<span class="kw">__global__ void</span> <span class="fn">build_tree_efficient</span>(
+    int64_t* parent_list,          <span class="cmt">// [b, depth, topk]</span>
+    int64_t* selected_index,       <span class="cmt">// [b, draft_token_num-1]</span>
+    bool*    tree_mask,            <span class="cmt">// [b*draft_n, draft_n]</span>
+    int64_t* positions,            <span class="cmt">// [b, draft_token_num]</span>
+    int64_t* retrive_next_token,   <span class="cmt">// [b, draft_token_num]</span>
+    int64_t* retrive_next_sibling  <span class="cmt">// [b, draft_token_num]</span>
+) {
+    <span class="kw">int</span> bid = blockIdx.x;   <span class="cmt">// batch 索引</span>
+    <span class="kw">int</span> tid = threadIdx.x;  <span class="cmt">// token 索引（0=root）</span>
+    <span class="kw">if</span> (tid == <span class="num-lit">0</span>) {
+        <span class="cmt">// Thread 0：构建整棵树的邻接表</span>
+        <span class="kw">for</span> (<span class="kw">int</span> i = draft_token_num - <span class="num-lit">1</span>; i &gt; <span class="num-lit">0</span>; --i) {
+            <span class="kw">int</span> parent_pos = find_parent_position(selected_index, i);
+            <span class="kw">if</span> (retrive_next_token[parent_pos] == -<span class="num-lit">1</span>)
+                retrive_next_token[parent_pos] = i;     <span class="cmt">// 第一个子节点</span>
+            <span class="kw">else</span> {
+                retrive_next_sibling[i] = retrive_next_token[parent_pos];
+                retrive_next_token[parent_pos] = i;     <span class="cmt">// 挂到兄弟链</span>
+            }
+        }
+    } <span class="kw">else</span> {
+        <span class="cmt">// Thread tid：计算该 token 的 position 和 tree_mask（并行）</span>
+        <span class="kw">int</span> depth = <span class="num-lit">0</span>, cur = tid - <span class="num-lit">1</span>;
+        <span class="kw">while</span> (<span class="kw">true</span>) {
+            depth++;
+            tree_mask[tid * draft_token_num + cur] = <span class="kw">true</span>;
+            <span class="kw">int</span> parent = selected_index[cur] / topk;
+            <span class="kw">if</span> (parent == <span class="num-lit">0</span>) <span class="kw">break</span>;
+            cur = find_in_selected(parent);
+        }
+        positions[tid] = seq_len + depth;
+    }
+}</div>
+</section>
+
+<section id="verify-phase">
+<h2><span class="num">07</span> Verify 阶段：DFS 遍历与 Rejection Sampling</h2>
+<div class="card">
+<svg viewBox="0 0 840 450" width="100%" style="display:block;">
+  <text x="30" y="24" fill="#94a3b8" font-size="12" font-weight="600">DFS 遍历 + Rejection Sampling（speculative_sampling.cuh : L39）</text>
+  <circle cx="160" cy="72" r="24" fill="rgba(247,201,72,0.15)" stroke="#f7c948" stroke-width="2"/>
+  <text x="160" y="76" text-anchor="middle" fill="#f7c948" font-size="10">root(0)</text>
+  <circle cx="80" cy="162" r="22" fill="#1e2535" stroke="#56d364" stroke-width="2"/>
+  <text x="80" y="158" text-anchor="middle" fill="#56d364" font-size="10">T&#8321;</text>
+  <text x="80" y="172" text-anchor="middle" fill="#56d364" font-size="8">&#10003; 接受</text>
+  <circle cx="250" cy="162" r="22" fill="#1e2535" stroke="#f87171" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="250" y="158" text-anchor="middle" fill="#f87171" font-size="10">T&#8322;</text>
+  <text x="250" y="172" text-anchor="middle" fill="#f87171" font-size="8">&#10007; 拒绝</text>
+  <circle cx="40" cy="268" r="20" fill="#1e2535" stroke="#56d364" stroke-width="2"/>
+  <text x="40" y="264" text-anchor="middle" fill="#56d364" font-size="10">T&#8323;</text>
+  <text x="40" y="278" text-anchor="middle" fill="#56d364" font-size="8">&#10003; 接受</text>
+  <circle cx="140" cy="268" r="20" fill="#1e2535" stroke="#f87171" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="140" y="264" text-anchor="middle" fill="#f87171" font-size="10">T&#8324;</text>
+  <text x="140" y="278" text-anchor="middle" fill="#f87171" font-size="8">&#10007; 拒绝</text>
+  <circle cx="40" cy="360" r="20" fill="rgba(247,201,72,0.15)" stroke="#f7c948" stroke-width="2" stroke-dasharray="4,2"/>
+  <text x="40" y="356" text-anchor="middle" fill="#f7c948" font-size="9">bonus</text>
+  <text x="40" y="370" text-anchor="middle" fill="#f7c948" font-size="8">token</text>
+  <line x1="140" y1="91" x2="96" y2="143" stroke="#56d364" stroke-width="2.5"/>
+  <line x1="180" y1="91" x2="234" y2="143" stroke="#f87171" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <line x1="62" y1="181" x2="44" y2="250" stroke="#56d364" stroke-width="2.5"/>
+  <line x1="98" y1="181" x2="128" y2="250" stroke="#f87171" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <line x1="40" y1="288" x2="40" y2="342" stroke="#f7c948" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="112" y="124" fill="#94a3b8" font-size="8">&#9312; next_token</text>
+  <text x="198" y="124" fill="#94a3b8" font-size="8">&#9313; next_sibling</text>
+  <text x="52" y="218" fill="#94a3b8" font-size="8">&#9314; next_token</text>
+  <text x="104" y="218" fill="#94a3b8" font-size="8">&#9315; next_sibling</text>
+  <text x="50" y="326" fill="#94a3b8" font-size="8">&#9316; bonus</text>
+  <rect x="10" y="402" width="310" height="28" rx="5" fill="rgba(86,211,100,0.1)" stroke="#56d364" stroke-width="1"/>
+  <text x="165" y="421" text-anchor="middle" fill="#56d364" font-size="10">接受序列: root &#8594; T&#8321; &#8594; T&#8323; &#8594; bonus token</text>
+
+  <rect x="360" y="38" width="460" height="78" rx="8" fill="#0d1117" stroke="#2d3748"/>
+  <text x="590" y="58" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">对当前候选 token t：</text>
+  <text x="380" y="78" fill="#4f8ef7" font-size="10">p_target(t) — 目标模型在该位置对 t 的概率</text>
+  <text x="380" y="96" fill="#c084fc" font-size="10">p_draft(t)  — 草稿模型对 t 的概率</text>
+
+  <rect x="360" y="134" width="460" height="98" rx="8" fill="#0d1117" stroke="#f7c948" stroke-width="1.5"/>
+  <text x="590" y="156" text-anchor="middle" fill="#f7c948" font-size="11" font-weight="600">接受判决（任一满足即接受）</text>
+  <text x="380" y="178" fill="#56d364" font-size="10">&#9312; p_target(t) &#8805; threshold_single</text>
+  <text x="380" y="198" fill="#56d364" font-size="10">&#9313; random_coin &#8804; prob_acc / threshold_acc</text>
+  <text x="380" y="216" fill="#64748b" font-size="9">   prob_acc 为当前层累积的 target 概率之和</text>
+
+  <rect x="360" y="252" width="210" height="58" rx="8" fill="rgba(86,211,100,0.08)" stroke="#56d364" stroke-width="1"/>
+  <text x="465" y="272" text-anchor="middle" fill="#56d364" font-size="10" font-weight="600">Accept</text>
+  <text x="465" y="290" text-anchor="middle" fill="#94a3b8" font-size="9">记录 accept_index</text>
+  <text x="465" y="304" text-anchor="middle" fill="#94a3b8" font-size="8">走 retrive_next_token</text>
+
+  <rect x="600" y="252" width="220" height="58" rx="8" fill="rgba(248,113,113,0.08)" stroke="#f87171" stroke-width="1"/>
+  <text x="710" y="272" text-anchor="middle" fill="#f87171" font-size="10" font-weight="600">Reject</text>
+  <text x="710" y="290" text-anchor="middle" fill="#94a3b8" font-size="9">走 retrive_next_sibling</text>
+  <text x="710" y="304" text-anchor="middle" fill="#94a3b8" font-size="8">若 -1 则终止该层</text>
+
+  <rect x="360" y="330" width="460" height="88" rx="8" fill="#0d1117" stroke="#c084fc" stroke-width="1.5"/>
+  <text x="590" y="352" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">最终 Bonus Token 采样（保证无偏）</text>
+  <text x="380" y="374" fill="#94a3b8" font-size="10">从修正分布采样（Rejection Sampling 的理论保证）：</text>
+  <text x="380" y="394" fill="#4f8ef7" font-size="10">q(x) = max(p_target(x) &#8722; p_draft(x), 0) / Z</text>
+  <text x="380" y="410" fill="#64748b" font-size="9">Z = &#931; max(p_target &#8722; p_draft, 0)  （归一化常数）</text>
+</svg>
+</div>
+<div class="code"><span class="cmt">// speculative_sampling.cuh: TreeSpeculativeSamplingTargetOnly（简化）</span>
+<span class="kw">for</span> (uint32_t j = <span class="num-lit">1</span>; j &lt; num_speculative_tokens; ++j) {
+    cur_index = retrive_next_token[cur_index];  <span class="cmt">// 进入下一层</span>
+    <span class="kw">while</span> (cur_index != -<span class="num-lit">1</span>) {
+        draft_token_id = candidates[cur_index];
+        target_prob    = target_probs[cur_prob_offset + draft_token_id];
+        prob_acc += target_prob;
+        <span class="kw">if</span> (coin &lt;= prob_acc / threshold_acc || target_prob &gt;= threshold_single) {
+            <span class="cmt">// Accept：记录、更新随机数、沿 next_token 深入子节点</span>
+            accept_index[++num_accepted] = cur_index;
+            predicts[last_accepted] = draft_token_id;
+            coin = uniform_samples[cur_index];
+            prob_acc = <span class="num-lit">0.0f</span>;
+            <span class="kw">break</span>;
+        } <span class="kw">else</span> {
+            <span class="cmt">// Reject：尝试 next_sibling</span>
+            cur_index = retrive_next_sibling[cur_index];
+        }
+    }
+    <span class="kw">if</span> (cur_index == -<span class="num-lit">1</span>) <span class="kw">break</span>;  <span class="cmt">// 该层全部拒绝，终止</span>
+}
+<span class="cmt">// Bonus token：从 relu(p_target - p_draft) 中采样</span>
+<span class="kw">for</span> (uint32_t i = <span class="num-lit">0</span>; i &lt; vocab_size; ++i)
+    relu_q_minus_p[i] = <span class="fn">max</span>(target_probs[i] - draft_probs[i], <span class="num-lit">0.0f</span>);
+predicts[last_accepted] = <span class="fn">sample_from</span>(relu_q_minus_p, final_coin);</div>
+</section>
+
+<section id="attention-mask">
+<h2><span class="num">08</span> Tree Attention Mask</h2>
+<p>目标模型并行验证时，每个 draft token 只能 attend 到其<strong>祖先节点</strong>，不能跨分支。这通过自定义的 Tree Mask 实现，由 CUDA 核在树构建时同步填充。</p>
+<div class="card">
+<svg viewBox="0 0 840 320" width="100%" style="display:block;">
+  <text x="30" y="24" fill="#94a3b8" font-size="11" font-weight="600">候选树（7 节点）</text>
+  <circle cx="130" cy="66" r="20" fill="rgba(247,201,72,0.15)" stroke="#f7c948" stroke-width="2"/>
+  <text x="130" y="70" text-anchor="middle" fill="#f7c948" font-size="9">root(0)</text>
+  <circle cx="66" cy="150" r="18" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="66" y="154" text-anchor="middle" fill="#4f8ef7" font-size="9">T&#8321;(1)</text>
+  <circle cx="195" cy="150" r="18" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="195" y="154" text-anchor="middle" fill="#4f8ef7" font-size="9">T&#8322;(2)</text>
+  <circle cx="28" cy="244" r="16" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="28" y="248" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8323;(3)</text>
+  <circle cx="108" cy="244" r="16" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="108" y="248" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8324;(4)</text>
+  <circle cx="166" cy="244" r="16" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="166" y="248" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8325;(5)</text>
+  <circle cx="240" cy="244" r="16" fill="#1e2535" stroke="#4f8ef7" stroke-width="1.5"/>
+  <text x="240" y="248" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8326;(6)</text>
+  <line x1="114" y1="82" x2="78" y2="134" stroke="#4f8ef7" stroke-width="1.2" opacity="0.6"/>
+  <line x1="146" y1="82" x2="183" y2="134" stroke="#4f8ef7" stroke-width="1.2" opacity="0.6"/>
+  <line x1="52" y1="165" x2="36" y2="229" stroke="#4f8ef7" stroke-width="1.2" opacity="0.6"/>
+  <line x1="80" y1="165" x2="100" y2="229" stroke="#4f8ef7" stroke-width="1.2" opacity="0.6"/>
+  <line x1="179" y1="165" x2="172" y2="229" stroke="#4f8ef7" stroke-width="1.2" opacity="0.6"/>
+  <line x1="210" y1="165" x2="234" y2="229" stroke="#4f8ef7" stroke-width="1.2" opacity="0.6"/>
+
+  <text x="310" y="24" fill="#94a3b8" font-size="11" font-weight="600">Tree Attention Mask（行=query，列=key）</text>
+  <text x="310" y="40" fill="#64748b" font-size="9">&#10003; 绿=可见  &#10007; 红=不可见（masked）</text>
+
+  <text x="374" y="58" text-anchor="middle" fill="#f7c948" font-size="8">root</text>
+  <text x="418" y="58" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8321;</text>
+  <text x="462" y="58" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8322;</text>
+  <text x="506" y="58" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8323;</text>
+  <text x="550" y="58" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8324;</text>
+  <text x="594" y="58" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8325;</text>
+  <text x="638" y="58" text-anchor="middle" fill="#4f8ef7" font-size="8">T&#8326;</text>
+
+  <text x="308" y="84" text-anchor="end" fill="#f7c948" font-size="8">root(0)</text>
+  <rect x="352" y="64" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/>
+  <text x="374" y="82" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="396" y="64" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="418" y="82" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="440" y="64" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="462" y="82" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="484" y="64" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="506" y="82" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="528" y="64" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="550" y="82" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="572" y="64" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="594" y="82" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="616" y="64" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="638" y="82" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+
+  <text x="308" y="116" text-anchor="end" fill="#4f8ef7" font-size="8">T&#8321;(1)</text>
+  <rect x="352" y="96" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/><text x="374" y="114" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="396" y="96" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/><text x="418" y="114" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="440" y="96" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="462" y="114" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="484" y="96" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="506" y="114" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="528" y="96" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="550" y="114" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="572" y="96" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="594" y="114" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="616" y="96" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="638" y="114" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+
+  <text x="308" y="148" text-anchor="end" fill="#4f8ef7" font-size="8">T&#8322;(2)</text>
+  <rect x="352" y="128" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/><text x="374" y="146" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="396" y="128" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="418" y="146" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="440" y="128" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/><text x="462" y="146" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="484" y="128" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="506" y="146" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="528" y="128" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="550" y="146" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="572" y="128" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="594" y="146" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="616" y="128" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="638" y="146" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+
+  <text x="308" y="180" text-anchor="end" fill="#4f8ef7" font-size="8">T&#8323;(3)</text>
+  <rect x="352" y="160" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/><text x="374" y="178" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="396" y="160" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/><text x="418" y="178" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="440" y="160" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="462" y="178" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="484" y="160" width="44" height="28" rx="2" fill="rgba(86,211,100,0.25)" stroke="#56d364" stroke-width="1"/><text x="506" y="178" text-anchor="middle" fill="#56d364" font-size="11">&#10003;</text>
+  <rect x="528" y="160" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="550" y="178" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="572" y="160" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="594" y="178" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+  <rect x="616" y="160" width="44" height="28" rx="2" fill="rgba(248,113,113,0.1)"/><text x="638" y="178" text-anchor="middle" fill="#f87171" font-size="11">&#10007;</text>
+
+  <text x="495" y="220" text-anchor="middle" fill="#64748b" font-size="10">&#183; &#183; &#183; T&#8324;、T&#8325;、T&#8326; 同理 &#183; &#183; &#183;</text>
+
+  <rect x="310" y="238" width="360" height="72" rx="8" fill="rgba(79,142,247,0.05)" stroke="#2d3748"/>
+  <text x="490" y="260" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">Tree Mask 规则</text>
+  <text x="490" y="278" text-anchor="middle" fill="#94a3b8" font-size="9">每行（query）只能 attend 祖先链上的节点</text>
+  <text x="490" y="296" text-anchor="middle" fill="#94a3b8" font-size="9">T&#8321; 不能看 T&#8322;（不同分支），T&#8323; 可以看 root 和 T&#8321;</text>
+
+  <rect x="690" y="238" width="140" height="72" rx="8" fill="#1e2535" stroke="#2d3748"/>
+  <text x="760" y="258" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">三种掩码模式</text>
+  <text x="760" y="276" text-anchor="middle" fill="#4f8ef7" font-size="8">FULL_MASK</text>
+  <text x="760" y="292" text-anchor="middle" fill="#4f8ef7" font-size="8">QLEN_ONLY</text>
+  <text x="760" y="306" text-anchor="middle" fill="#4f8ef7" font-size="8">BITPACKING</text>
+</svg>
+</div>
+<div class="callout">
+Flash Attention 接受的掩码格式由 <code>tree_mask_mode</code> 控制。<code>QLEN_ONLY_BITPACKING</code> 用位压缩表示，可显著减少显存占用，适合 topk 较大的场景。
+</div>
+</section>
+
+<section id="config">
+<h2><span class="num">09</span> 关键参数与性能配置</h2>
+<div class="card">
+<table>
+<tr><th>参数</th><th>说明</th><th>推荐值（Llama）</th><th>影响</th></tr>
+<tr><td><code>--speculative-algorithm</code></td><td>投机采样算法</td><td><span class="badge badge-blue">EAGLE3</span></td><td>精度 / 速度权衡</td></tr>
+<tr><td><code>--speculative-num-steps</code></td><td>树深度（自回归步数）</td><td>3 ~ 5</td><td>越深候选越多，draft 开销增大</td></tr>
+<tr><td><code>--speculative-eagle-topk</code></td><td>分支因子（每步候选数）</td><td>4</td><td>越大树越宽，接受率&#8593;，显存&#8593;</td></tr>
+<tr><td><code>--speculative-num-draft-tokens</code></td><td>最大验证 token 数</td><td>16</td><td>限制实际树节点，避免显存爆炸</td></tr>
+<tr><td><code>--speculative-accept-threshold-single</code></td><td>单 token 接受阈值</td><td>1.0（严格）</td><td>降低可提高接受率但降低输出质量</td></tr>
+<tr><td><code>--speculative-accept-threshold-acc</code></td><td>累积接受阈值</td><td>1.0（严格）</td><td>同上</td></tr>
+</table>
+</div>
+<div class="card-grid">
+  <div class="card">
+    <h3>树节点数计算</h3>
+    <div class="code">nodes = (topk**depth - 1) // (topk - 1)
+
+topk=4, depth=3 &#8594; 21 节点
+topk=2, depth=5 &#8594; 31 节点
+topk=1, depth=5 &#8594;  5 节点（线性）
+
+actual = min(nodes, num_draft_tokens)</div>
+  </div>
+  <div class="card">
+    <h3>吞吐量提升</h3>
+    <p>理论加速比 &#8776; 平均接受长度 / (1 + draft_cost_ratio)。EAGLE3 + topk=4 在 Llama-3 上实测约 <strong>2~4x</strong> 吞吐提升。</p>
+    <div class="callout green">每次目标模型前向可验证 16 个候选，平均接受 3~6 个，等效于普通解码的 3~6 步！</div>
+  </div>
+</div>
+</section>
+
+</div>
+<div style="background:var(--bg2);border-top:1px solid var(--border);padding:24px 40px;text-align:center;color:var(--text3);font-size:0.8rem;">
+  SGLang Tree Decoding 解析 &#183; 基于源码 python/sglang/srt/speculative/ + sgl-kernel/csrc/speculative/ &#183; 2026-03
+</div>
+</body>
+</html>
