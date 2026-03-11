@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TensorRT-LLM Speculative Decoding: Eagle &amp; MTP Code Design</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg:#0d1117; --bg2:#161b22; --bg3:#21262d; --border:#30363d;
+    --text:#e6edf3; --text2:#8b949e;
+    --green:#3fb950; --blue:#58a6ff; --purple:#bc8cff;
+    --orange:#ffa657; --red:#ff7b72; --yellow:#e3b341;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65;}
+  .header{background:linear-gradient(135deg,#1a1f2e,#0d1117);border-bottom:1px solid var(--border);padding:38px 60px;}
+  .header h1{font-size:1.9rem;color:var(--blue);margin-bottom:8px;}
+  .header p{color:var(--text2);}
+  .toc{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px 28px;margin:28px 60px;}
+  .toc h3{color:var(--yellow);margin-bottom:10px;}
+  .toc ol{padding-left:18px;} .toc li{margin:4px 0;} .toc a{color:var(--blue);text-decoration:none;} .toc a:hover{text-decoration:underline;}
+  .sec{margin:0 60px 48px;}
+  h2{font-size:1.45rem;color:var(--orange);border-bottom:2px solid var(--border);padding:18px 0 10px;margin-bottom:18px;}
+  h3{font-size:1.1rem;color:var(--blue);margin:18px 0 10px;}
+  h4{font-size:.95rem;color:var(--green);margin:12px 0 6px;}
+  p{margin-bottom:10px;}
+  .card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:14px;}
+  .card h4{margin-top:0;}
+  .cg{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:12px;margin-bottom:18px;}
+  .cg .card{margin-bottom:0;}
+  code{background:var(--bg3);color:var(--green);padding:1px 5px;border-radius:4px;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:.875em;}
+  pre{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px;overflow-x:auto;margin-bottom:14px;}
+  pre code{background:none;padding:0;color:var(--text);font-size:.83em;}
+  .kw{color:var(--purple);} .fn{color:var(--blue);} .cmt{color:var(--text2);font-style:italic;}
+  .mermaid{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:18px;margin-bottom:18px;overflow-x:auto;}
+  .badge{display:inline-block;padding:2px 9px;border-radius:12px;font-size:.73rem;font-weight:600;margin-right:5px;}
+  .bt{background:#1a3a5c;color:var(--blue);border:1px solid var(--blue);}
+  .bp{background:#2a1a4a;color:var(--purple);border:1px solid var(--purple);}
+  .bc{background:#1a3a20;color:var(--green);border:1px solid var(--green);}
+  .by{background:#3a2a10;color:var(--orange);border:1px solid var(--orange);}
+  .fp{color:var(--text2);font-size:.77rem;font-family:monospace;display:block;margin-bottom:3px;}
+  table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:.87rem;}
+  th{background:var(--bg3);color:var(--yellow);padding:8px 12px;text-align:left;border:1px solid var(--border);}
+  td{padding:7px 12px;border:1px solid var(--border);vertical-align:top;}
+  tr:nth-child(even) td{background:rgba(255,255,255,.02);}
+  .ibox{border-left:3px solid var(--blue);background:rgba(88,166,255,.08);padding:11px 15px;border-radius:0 6px 6px 0;margin-bottom:14px;}
+  .wbox{border-left:3px solid var(--yellow);background:rgba(227,179,65,.08);padding:11px 15px;border-radius:0 6px 6px 0;margin-bottom:14px;}
+  /* arch boxes */
+  .arch{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:18px;margin-bottom:18px;}
+  .albl{color:var(--text2);font-size:.76rem;text-align:center;margin:5px 0;}
+  .arow{display:flex;align-items:stretch;gap:5px;margin:3px 0;}
+  .ab{display:flex;align-items:center;justify-content:center;padding:7px 9px;border-radius:6px;text-align:center;flex:1;font-size:.8rem;font-weight:500;line-height:1.35;}
+  .abbl{background:#1a3a5c;border:1px solid var(--blue);color:var(--blue);}
+  .abpu{background:#2a1a4a;border:1px solid var(--purple);color:var(--purple);}
+  .abgr{background:#1a3a20;border:1px solid var(--green);color:var(--green);}
+  .abor{background:#3a2a10;border:1px solid var(--orange);color:var(--orange);}
+  .abgy{background:var(--bg3);border:1px solid var(--border);color:var(--text2);}
+  .aar{display:flex;align-items:center;color:var(--text2);font-size:1.2rem;flex:0 0 22px;justify-content:center;}
+  .f80{flex:0 0 80px;} .f60{flex:0 0 60px;} .f2{flex:2;}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>TensorRT-LLM Speculative Decoding: Eagle &amp; MTP Code Design</h1>
+  <p>深度解析 Eagle (TRT / Torch 后端) 和 MTP (Torch 后端) 的代码架构与执行流程</p>
+</div>
+
+<div class="toc">
+  <h3>目录</h3>
+  <ol>
+    <li><a href="#s1">投机解码概述</a></li>
+    <li><a href="#s2">SpeculativeDecodingMode 枚举</a></li>
+    <li><a href="#s3">Eagle — TRT 后端</a>
+      <ol>
+        <li><a href="#s31">模型架构</a></li>
+        <li><a href="#s32">执行流程</a></li>
+        <li><a href="#s33">三个 Plugin 详解</a></li>
+        <li><a href="#s34">Eagle-1 vs Eagle-2</a></li>
+      </ol>
+    </li>
+    <li><a href="#s4">Eagle3 — Torch 后端</a>
+      <ol>
+        <li><a href="#s41">多层隐状态捕获</a></li>
+        <li><a href="#s42">变体模式</a></li>
+        <li><a href="#s43">Eagle3ResourceManager</a></li>
+        <li><a href="#s44">Eagle3SpecMetadata</a></li>
+        <li><a href="#s45">Eagle3OneModel 流程</a></li>
+        <li><a href="#s46">Eagle3TwoModel / CDL 流程</a></li>
+      </ol>
+    </li>
+    <li><a href="#s5">MTP — Torch 后端</a>
+      <ol>
+        <li><a href="#s51">架构</a></li>
+        <li><a href="#s52">MTPHiddenStatesManager</a></li>
+        <li><a href="#s53">MTPWorker 流程</a></li>
+        <li><a href="#s54">完整示例推导</a></li>
+      </ol>
+    </li>
+    <li><a href="#s6">对比总结</a></li>
+  </ol>
+</div>
+
+<!-- 1 -->
+<div class="sec" id="s1">
+  <h2>1. 投机解码概述</h2>
+  <p>利用轻量 <strong>draft 模型</strong>预先生成 K 个候选 token，再由 <strong>target 模型</strong>一次前向并行验证，不改变输出分布的同时提升吞吐量。</p>
+  <div class="arch">
+    <div class="albl">基本循环</div>
+    <div class="arow">
+      <div class="ab abpu">Draft 模型<br><small>生成 K 候选 token</small></div>
+      <div class="aar">→</div>
+      <div class="ab abbl">Target 模型<br><small>一次前向验证 K+1 位置</small></div>
+      <div class="aar">→</div>
+      <div class="ab abgr">接受/拒绝<br><small>连续前缀接受</small></div>
+      <div class="aar">→</div>
+      <div class="ab abor">输出<br><small>≥1 个新 token</small></div>
+    </div>
+  </div>
+  <div class="cg">
+    <div class="card">
+      <h4>Eagle <span class="badge bt">TRT</span></h4>
+      <p>独立 Eagle 网络（LLaMA 结构），通过 TRT Plugin 驱动 token 树。支持静态树（Eagle-1）和动态树（Eagle-2）。</p>
+      <span class="fp">tensorrt_llm/models/eagle/model.py</span>
+    </div>
+    <div class="card">
+      <h4>Eagle3 <span class="badge bp">Torch</span></h4>
+      <p>从 target 的 3 个深度层捕获隐状态拼接后送入 Eagle draft 网络。支持 OneModel 和 TwoModel+CDL。</p>
+      <span class="fp">tensorrt_llm/_torch/speculative/eagle3.py</span>
+    </div>
+    <div class="card">
+      <h4>MTP <span class="badge bp">Torch</span></h4>
+      <p>N 个 MTP 模块附加于 target，共享 embed+lm_head，无独立 draft 引擎，每模块预测下一位置 token。</p>
+      <span class="fp">tensorrt_llm/_torch/speculative/mtp.py</span>
+    </div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="sec" id="s2">
+  <h2>2. SpeculativeDecodingMode 枚举</h2>
+  <span class="fp">tensorrt_llm/_torch/speculative/interface.py</span>
+  <table>
+    <tr><th>模式</th><th>引擎数</th><th>说明</th><th>关键方法为 True</th></tr>
+    <tr><td><code>MTP</code></td><td>1</td><td>MTP 原版，target 内置 MTP 模块</td><td>is_mtp_one_model, use_one_engine, needs_kv_cache_rewind</td></tr>
+    <tr><td><code>MTP_EAGLE</code></td><td>2</td><td>MTP 风格 + Eagle 结构 draft（独立引擎）</td><td>is_mtp_eagle, has_draft_model, needs_kv_cache_recompute</td></tr>
+    <tr><td><code>MTP_EAGLE_ONE_MODEL</code></td><td>1</td><td>Eagle 结构内嵌 target，OneModel</td><td>is_mtp_eagle_one_model, use_one_engine</td></tr>
+    <tr><td><code>EAGLE3</code></td><td>2</td><td>Eagle3 独立 draft，捕获3层隐状态</td><td>is_eagle3, has_draft_model, needs_kv_cache_recompute</td></tr>
+    <tr><td><code>EAGLE3_ONE_MODEL</code></td><td>1</td><td>Eagle3 共享单引擎，draft 层内嵌</td><td>is_eagle3_one_model, use_one_engine, needs_kv_cache_rewind</td></tr>
+    <tr><td><code>DRAFT_TARGET</code></td><td>2</td><td>通用两模型方案</td><td>has_draft_model, is_draft_target</td></tr>
+    <tr><td><code>NGRAM</code></td><td>1</td><td>N-gram 启发式 draft</td><td>is_ngram, needs_kv_cache_rewind</td></tr>
+    <tr><td><code>SA</code></td><td>1</td><td>Suffix Automaton 辅助</td><td>is_sa, use_one_engine</td></tr>
+  </table>
+  <div class="ibox">
+    <strong>关键布尔方法：</strong><br>
+    <code>use_one_engine()</code> — 共享单引擎，需 KV rewind<br>
+    <code>has_draft_model()</code> — 有独立 draft 引擎（EAGLE3, MTP_EAGLE, DRAFT_TARGET）<br>
+    <code>needs_kv_cache_recompute()</code> — draft 第一步须重建 KV（EAGLE3, MTP_EAGLE）<br>
+    <code>extend_ctx()</code> — draft token 是否以 chunked-context 模式处理
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="sec" id="s3">
+  <h2>3. Eagle — TRT 后端</h2>
+
+  <div id="s31">
+    <h3>3.1 模型架构</h3>
+    <span class="badge bt">TRT Engine</span> <span class="badge bc">C++ Runtime</span> <span class="badge by">Python 构图</span>
+    <div class="arch" style="margin-top:12px;">
+      <div class="albl">Eagle TRT 整体层次</div>
+      <div class="arow"><div class="ab abbl f2"><b>EagleForCausalLM</b> &nbsp;<small style="color:var(--text2)">tensorrt_llm/models/eagle/model.py</small></div></div>
+      <div class="albl">包含 ↓</div>
+      <div class="arow">
+        <div class="ab abbl">LLaMAModel<br><small>Target 主干 L 层</small></div>
+        <div class="aar"></div>
+        <div class="ab abpu">EagleNet × N<br><small>Eagle Draft 网络</small></div>
+      </div>
+      <div class="albl">三个 TRT Plugins ↓</div>
+      <div class="arow">
+        <div class="ab abor">EagleSampleAndAccept<br>DraftTokensPlugin<br><small>采样+接受/拒绝</small></div>
+        <div class="ab abor">EaglePrepareDrafter<br>InputsPlugin<br><small>整理 Draft 输入</small></div>
+        <div class="ab abor">EagleDecodeDraft<br>TokensPlugin × N<br><small>Draft token 树生成</small></div>
+      </div>
+      <div class="albl">C++ Runtime ↓</div>
+      <div class="arow"><div class="ab abgr f2">EagleDecodingLayer (C++) &nbsp;<small style="color:var(--text2)">layers/eagleDecodingLayer.cpp — cuRAND, batch slots, mask/path 转换</small></div></div>
+      <div class="arow"><div class="ab abgr f2">EagleBuffers (C++) &nbsp;<small style="color:var(--text2)">runtime/eagleBuffers.cpp — draft tokens, KV lengths, hidden starts 缓冲</small></div></div>
+      <div class="arow"><div class="ab abgr f2">eagleDecodingKernels.cu &nbsp;<small style="color:var(--text2)">kernels/speculativeDecoding/ — CUDA 低级 kernel</small></div></div>
+    </div>
+  </div>
+
+  <div id="s32">
+    <h3>3.2 完整执行流程</h3>
+    <div class="mermaid">
+sequenceDiagram
+    participant Exec as Executor
+    participant TM as Target LLaMA Engine
+    participant P1 as Plugin SampleAndAccept
+    participant P2 as Plugin PrepareDrafterInputs
+    participant EN as EagleNet x N
+    participant P3 as Plugin DecodeDraftTokens
+    participant CL as C++ EagleDecodingLayer
+
+    Note over Exec,CL: Context Phase
+    Exec->>TM: forward prompt tokens
+    TM-->>Exec: logits + hidden_states
+    Exec->>P1: SampleAndAccept logits draft_tokens=empty
+    P1-->>Exec: accepted_tokens paths
+    Exec->>P2: PrepareDrafterInputs accepted hidden paths
+    P2-->>Exec: eagle_input_ids positions hidden
+    loop Eagle layer i=0..N-1
+        Exec->>EN: forward eagle_inputs
+        EN-->>Exec: eagle_logits
+        Exec->>P3: DecodeDraftTokens layer_idx=i logits paths scores
+        P3-->>Exec: draft_tokens draft_lens new_paths scores
+    end
+
+    Note over Exec,CL: Generation Phase
+    Exec->>TM: forward last_accepted + K draft tokens
+    TM-->>Exec: logits K+1 + hidden_states K+1
+    Exec->>P1: SampleAndAccept logits draft_tokens K tree_paths
+    P1-->>Exec: accepted_tokens num_accepted accepted_paths
+    Exec->>CL: EagleDecodingLayer.forwardAsync
+    Note over CL: augmentBatchSlots convertToPackedMask packAcceptedPaths
+    Exec->>P2: PrepareDrafterInputs accepted hidden paths
+    P2-->>Exec: next eagle inputs
+    loop Next K draft tokens
+        Exec->>EN: forward eagle inputs
+        EN-->>Exec: eagle_logits
+        Exec->>P3: DecodeDraftTokens logits
+        P3-->>Exec: next_draft_tokens next_paths
+    end
+    </div>
+  </div>
+
+  <div id="s33">
+    <h3>3.3 三个核心 Plugin 详解</h3>
+    <div class="card">
+      <h4>Plugin 1 — EagleSampleAndAcceptDraftTokensPlugin</h4>
+      <span class="fp">cpp/tensorrt_llm/plugins/eaglePlugin/eagleSampleAndAcceptDraftTokensPlugin.cpp</span>
+      <p>对 target logits 采样并验证 draft tokens。支持 greedy / multinomial / typical acceptance 三种模式。</p>
+      <table>
+        <tr><th>关键输入</th><th>形状</th><th>说明</th></tr>
+        <tr><td><code>lm_logits</code></td><td>[num_tokens, vocab]</td><td>Target 模型所有位置的 logits</td></tr>
+        <tr><td><code>draft_tokens</code></td><td>[batch, max_draft]</td><td>上一轮 Eagle 生成的候选 tokens</td></tr>
+        <tr><td><code>draft_lens</code></td><td>[batch]</td><td>context=0，generation=K</td></tr>
+        <tr><td><code>tree_params.paths</code></td><td>[batch, max_decode, max_path]</td><td>token 树路径矩阵</td></tr>
+        <tr><td><code>greedy_sampling</code></td><td>[1]</td><td>是否 top-1 greedy</td></tr>
+        <tr><td><code>use_dynamic_tree</code></td><td>[1]</td><td>Eagle-1 静态 / Eagle-2 动态</td></tr>
+      </table>
+      <table>
+        <tr><th>关键输出</th><th>说明</th></tr>
+        <tr><td><code>accepted_tokens</code></td><td>被接受的 token ids</td></tr>
+        <tr><td><code>num_accepted_tokens</code></td><td>每 request 实际接受数（≥1）</td></tr>
+        <tr><td><code>accepted_paths</code></td><td>被接受路径在树中的索引</td></tr>
+        <tr><td><code>next_draft_tokens/lens/paths</code></td><td>为下一轮分配的空 buffer</td></tr>
+        <tr><td><code>hidden_size_batch_level_starts</code></td><td>为 Plugin2 提供每 request 隐状态起始偏移</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h4>Plugin 2 — EaglePrepareDrafterInputsPlugin</h4>
+      <span class="fp">cpp/tensorrt_llm/plugins/eaglePlugin/eaglePrepareDrafterInputsPlugin.cpp</span>
+      <p>从 target hidden states 中 gather 接受路径上各节点的隐状态，并计算 position ids，生成 EagleNet 第一步输入。</p>
+      <ul style="padding-left:16px;color:var(--text);">
+        <li>沿 accepted_paths 展开树路径，取对应深度 hidden states</li>
+        <li>计算每个 draft 位置的 position id（根节点 position + 路径深度）</li>
+        <li>输出扁平化 eagle_input_ids / position_ids / hidden_states</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h4>Plugin 3 — EagleDecodeDraftTokensPlugin（每 Eagle 层一次）</h4>
+      <span class="fp">cpp/tensorrt_llm/plugins/eaglePlugin/eagleDecodeDraftTokensPlugin.cpp</span>
+      <p>在每个 Eagle 层输出 logits 后进行 top-K/multinomial 采样，维护 token 树动态扩展。</p>
+      <table>
+        <tr><th>参数</th><th>说明</th></tr>
+        <tr><td><code>layer_idx / num_eagle_layers</code></td><td>当前/总 Eagle 层数</td></tr>
+        <tr><td><code>input_prev_scores</code></td><td>上一层各节点得分</td></tr>
+        <tr><td><code>input_current_expand_indices</code></td><td>本层要扩展的节点（Eagle-2 动态选择）</td></tr>
+        <tr><td><code>input_all_layers_scores/tokens/predecessors</code></td><td>Eagle-2 跨层全局得分记录（beam 选优）</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div id="s34">
+    <h3>3.4 Eagle-1 vs Eagle-2 差异</h3>
+    <div class="mermaid">
+graph LR
+    subgraph staticTree["Eagle-1 静态树"]
+        direction TB
+        s1["固定 eagle_choices\n如 60 条路径"]
+        s2["top-K 采样\n每层固定展开拓扑"]
+        s3["静态路径矩阵\npaths 一次确定"]
+        s1-->s2-->s3
+    end
+
+    subgraph dynamicTree["Eagle-2 动态树"]
+        direction TB
+        d1["dynamic_tree_max_topK\n如 10"]
+        d2["每层 softmax score\n选最高分节点展开"]
+        d3["all_layers_scores\n跨层追踪全局最优"]
+        d4["动态 token 树\n形状随输入变化"]
+        d1-->d2-->d3-->d4
+    end
+
+    style s1 fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style s2 fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style s3 fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style d1 fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style d2 fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style d3 fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style d4 fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="sec" id="s4">
+  <h2>4. Eagle3 — Torch 后端</h2>
+
+  <div id="s41">
+    <h3>4.1 核心思想：多层隐状态捕获</h3>
+    <p>从 target 模型的 <strong>3个不同深度层</strong>（layer 1、layer N/2-1、layer N-4）捕获隐状态，拼接为 3H 维向量，经 <code>eagle3_fc</code> 压缩为 H 维作为 Eagle draft 网络的条件输入。</p>
+    <div class="arch">
+      <div class="albl">Target 模型（N=32）隐状态捕获点</div>
+      <div class="arow">
+        <div class="ab abgy f60">Embed</div>
+        <div class="aar">→</div>
+        <div class="ab abbl f80"><b>Layer 1</b><br><small>capture H1</small></div>
+        <div class="aar">→</div>
+        <div class="ab abgy">Layer 2..14</div>
+        <div class="aar">→</div>
+        <div class="ab abbl f80"><b>Layer 15</b><br><small>capture H15</small></div>
+        <div class="aar">→</div>
+        <div class="ab abgy">Layer 16..27</div>
+        <div class="aar">→</div>
+        <div class="ab abbl f80"><b>Layer 28</b><br><small>capture H28</small></div>
+        <div class="aar">→</div>
+        <div class="ab abgy">Layer 29..32</div>
+        <div class="aar">→</div>
+        <div class="ab abgr f60">LM Head</div>
+      </div>
+      <div class="albl">concat[H1; H15; H28] → [token, 3H] → eagle3_fc → [token, H] → Eagle Draft Network</div>
+    </div>
+    <pre><code><span class="cmt"># SpecMetadata.maybe_capture_hidden_states() 在 target 每层后被调用</span>
+<span class="kw">def</span> <span class="fn">maybe_capture_hidden_states</span>(self, layer_id, hidden_states, residual=None):
+    <span class="kw">for</span> i, captured_layer_id <span class="kw">in</span> <span class="fn">enumerate</span>(self.layers_to_capture):  <span class="cmt"># (1, 15, 28)</span>
+        <span class="kw">if</span> captured_layer_id == layer_id:
+            to_save = hidden_states + residual <span class="kw">if</span> residual <span class="kw">is not None else</span> hidden_states
+            <span class="cmt"># 写入第 i 段：eagle3_buffer[:, i*H:(i+1)*H]</span>
+            eagle3_hidden[:, i*H:(i+1)*H].index_copy_(0, write_indices, to_save)
+            <span class="kw">break</span>
+
+<span class="cmt"># 默认捕获层：layers_to_capture = (1, N//2-1, N-4)  N=32 时为 (1, 15, 28)</span>
+<span class="cmt"># MTP_EAGLE / 单层模型：layers_to_capture = (-1,)  仅最后一层</span></code></pre>
+  </div>
+
+  <div id="s42">
+    <h3>4.2 Eagle3 变体模式</h3>
+    <div class="cg">
+      <div class="card">
+        <h4>EAGLE3 TwoModel <span class="badge bp">Torch</span></h4>
+        <p><strong>两个独立引擎</strong>：target + draft 分开。</p>
+        <ul style="padding-left:14px;font-size:.88rem;">
+          <li>Target 前向捕获3层 hidden → 写入 Eagle3ResourceManager</li>
+          <li>Draft 引擎（独立 Eagle 网络）从缓冲区读取</li>
+          <li>LinearDraftingLoopWrapper（CDL）封装自回归循环，可 CUDA Graph 捕获</li>
+          <li>Draft 第一步需 KV cache recompute</li>
+        </ul>
+        <span class="fp">_torch/speculative/drafting_loops.py</span>
+      </div>
+      <div class="card">
+        <h4>EAGLE3_ONE_MODEL <span class="badge bp">Torch</span></h4>
+        <p><strong>共享单引擎</strong>：draft 层内嵌于 target 模型。</p>
+        <ul style="padding-left:14px;font-size:.88rem;">
+          <li>隐状态写入 Eagle3OneModelSpecMetadata.hidden_states</li>
+          <li>Target 前向完成后，Eagle3OneModelWorker 驱动 draft 层自回归</li>
+          <li>Draft 层权重从独立 checkpoint 加载</li>
+          <li>KV cache 可选分离（use_separate_draft_kv_cache）</li>
+        </ul>
+        <span class="fp">_torch/speculative/eagle3.py — Eagle3OneModelWorker</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="s43">
+    <h3>4.3 Eagle3ResourceManager（TwoModel 专用）</h3>
+    <span class="fp">tensorrt_llm/_torch/speculative/eagle3.py</span>
+    <div class="mermaid">
+graph TD
+    RM["Eagle3ResourceManager\n继承 BaseResourceManager"]
+    RM --> SM["slot_manager SlotManager\nrequest_id to slot_id"]
+    RM --> HS["hidden_states Tensor\nshape: max_tokens x hidden_size x num_capture_layers\n所有 request 共享的连续缓冲区"]
+    RM --> SL["seq_lens dict slot_id to int\n各 slot 当前序列长度"]
+    RM --> SI["start_indices dict slot_id to int\n各 slot 在 hidden_states 中的起始偏移"]
+    RM --> FD["is_first_draft bool\nTrue 表示下一个 draft forward 是第一步"]
+    RM --> ST["spec_tree_manager SpecTreeManager\n仅 eagle_choices 树路径模式使用"]
+    SM --> PR["prepare_resources\n新 context request 分配 slot"]
+    SI --> IDX["prepare 计算 write/read indices\ntarget forward 写 write_indices\ndraft forward 读 read_indices"]
+
+    style RM fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style SM fill:#21262d,color:#e6edf3,stroke:#30363d
+    style HS fill:#21262d,color:#e6edf3,stroke:#30363d
+    style SL fill:#21262d,color:#e6edf3,stroke:#30363d
+    style SI fill:#21262d,color:#e6edf3,stroke:#30363d
+    style FD fill:#21262d,color:#e6edf3,stroke:#30363d
+    style ST fill:#21262d,color:#e6edf3,stroke:#30363d
+    </div>
+    <div class="ibox">
+      <strong>索引机制：</strong> 每个 request 在 <code>hidden_states</code> 中有预分配连续块（<code>start_idx</code> 起，大小 = max(seq_len, max_total_draft_tokens+1)）。
+      通过 <code>write_indices</code>（target 写）和 <code>read_indices</code>（draft 读）零拷贝共享。
+      接受树路径后，read_indices 按 accepted_path gather 对应节点隐状态。
+    </div>
+  </div>
+
+  <div id="s44">
+    <h3>4.4 Eagle3SpecMetadata 关键字段</h3>
+    <table>
+      <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+      <tr><td><code>layers_to_capture</code></td><td>tuple[int]</td><td>捕获层号，默认 (1, N//2-1, N-4)</td></tr>
+      <tr><td><code>num_capture_layers</code></td><td>int</td><td>捕获层数，默认 3</td></tr>
+      <tr><td><code>eagle3_resource_manager</code></td><td>Eagle3ResourceManager</td><td>跨步骤持有隐状态缓冲（TwoModel）</td></tr>
+      <tr><td><code>hidden_states_read_indices</code></td><td>Tensor[long,cuda]</td><td>Draft 读取的 gather index</td></tr>
+      <tr><td><code>hidden_states_write_indices</code></td><td>Tensor[long,cuda]</td><td>Target 写入的 scatter index</td></tr>
+      <tr><td><code>is_draft_model</code></td><td>bool</td><td>True 时只捕获最后一层</td></tr>
+      <tr><td><code>is_first_draft</code></td><td>bool</td><td>是否 draft 第一步（读多 token 历史）</td></tr>
+      <tr><td><code>eagle_choices</code></td><td>List[List[int]]</td><td>静态树路径，None 则线性树</td></tr>
+      <tr><td><code>request_accepted_path</code></td><td>Dict[int,List[int]]</td><td>上一步各 request 被接受的路径节点</td></tr>
+    </table>
+  </div>
+
+  <div id="s45">
+    <h3>4.5 Eagle3OneModel 执行流程</h3>
+    <div class="mermaid">
+sequenceDiagram
+    participant ME as ModelEngine
+    participant TM as Target Model with Eagle layers
+    participant W as Eagle3OneModelWorker
+    participant SM as Eagle3OneModelSpecMetadata
+
+    Note over ME,SM: Generation Step
+    ME->>SM: spec_metadata.prepare update batch_indices_cuda
+    ME->>TM: forward input_ids=[last_accepted + K draft] attn_metadata spec_metadata
+    Note over TM: 每过 layers_to_capture 层调用 maybe_capture_hidden_states
+    Note over TM: 写入 spec_metadata.hidden_states[token_idx, i*H to i+1*H]
+    TM-->>ME: logits[num_tokens, vocab]
+    ME->>W: worker.forward input_ids pos hidden logits attn spec
+    W->>W: sample_and_accept_draft_tokens
+    Note over W: greedy argmax logits to target_tokens\ncumprod 连续前缀匹配 draft_tokens\nnum_accepted_tokens[batch]
+    W->>W: prepare_1st_drafter_inputs
+    Note over W: 从 spec_metadata.hidden_states 取 3H 向量\napply_eagle3_fc 压缩 3H to H\n构造 eagle input_ids
+    W->>W: _prepare_attn_metadata_for_spec_dec 保存快照
+    loop i=0 to max_draft_len-1
+        W->>TM: draft_model.model inputs
+        TM-->>W: hidden_states hidden_states_to_save
+        W->>TM: draft_model.logits_processor hidden[gather_ids]
+        TM-->>W: draft_logits[batch, vocab]
+        W->>W: draft_decoder greedy argmax to new_draft_token
+        W->>W: update inputs: input_ids=new_draft_token\nhidden=hidden_to_save[gather_ids]\nposition_ids+=1 kv_lens+=1
+        Note over W: i==0 时 seq_lens 全置1 num_contexts=0
+    end
+    W->>W: _restore_attn_metadata_from_spec_dec
+    W-->>ME: accepted_tokens num_accepted next_draft_tokens next_new_tokens
+    </div>
+  </div>
+
+  <div id="s46">
+    <h3>4.6 Eagle3TwoModel / CDL 执行流程</h3>
+    <span class="fp">tensorrt_llm/_torch/speculative/drafting_loops.py — LinearDraftingLoopWrapper</span>
+    <p>TwoModel 将 draft 自回归循环封装为 <code>torch.nn.Module</code>（<strong>Capturable Drafting Loops, CDL</strong>），整体可被 CUDA Graph 捕获消除 Python 调度开销。</p>
+    <div class="mermaid">
+sequenceDiagram
+    participant ME as ModelEngine
+    participant TM as Target Engine
+    participant RM as Eagle3ResourceManager
+    participant CDL as LinearDraftingLoopWrapper
+    participant DE as Draft Eagle Engine
+
+    Note over ME,DE: Generation Step
+    ME->>TM: target_model.forward last_token + K drafts spec_metadata is_draft_model=False
+    Note over TM: 每层后 maybe_capture_hidden_states\n写入 RM.hidden_states[write_indices]
+    TM-->>ME: logits[K+1, vocab]
+    ME->>ME: sampler: accepted_tokens accepted_paths num_accepted
+    ME->>RM: is_first_draft=True update read_indices by accepted_paths
+
+    ME->>CDL: drafting_loop.forward input_ids pos attn_metadata spec_metadata
+
+    Note over CDL,DE: First Draft Forward is_first_draft=True
+    CDL->>DE: draft_model.forward accepted_tokens pos spec_metadata is_draft_model=True use_spec_decoding=True
+    Note over DE: 从 RM.hidden_states[read_indices] 读多 token 历史\neagle3_fc concat 3层 to H\nKV cache recompute multi-query 模式
+    DE-->>CDL: eagle_logits[num_accepted]
+    CDL->>CDL: sample logits[gather_ids] to first_draft_token[batch]
+
+    Note over CDL,DE: Subsequent Forwards is_first_draft=False
+    CDL->>CDL: save_metadata_state 保存 attn/spec 快照
+    CDL->>CDL: prepare_for_generation seq_lens=1
+
+    loop i=1 to max_draft_len-1
+        CDL->>DE: draft_model.forward prev_draft_token pos attn_metadata
+        Note over DE: 只读最后一层 hidden
+        DE-->>CDL: logits[batch, vocab]
+        CDL->>CDL: sample to next_draft_token
+        CDL->>CDL: kv_lens_cuda batch+=1
+    end
+    CDL->>CDL: restore_metadata_state
+    CDL-->>ME: new_draft_tokens[K, batch] draft_logits[K, batch, vocab]
+    </div>
+    <div class="wbox">
+      <strong>KV Cache Recompute：</strong> Eagle3 TwoModel 中 draft 引擎有独立 KV cache，每轮第一步以 <code>use_spec_decoding=True</code> 触发 multi-query 模式，为已接受的 token 重建 KV。后续自回归步（is_first_draft=False）正常增量更新。
+    </div>
+  </div>
+</div>
+
+<!-- 5 -->
+<div class="sec" id="s5">
+  <h2>5. MTP — Torch 后端</h2>
+
+  <div id="s51">
+    <h3>5.1 MTP 架构</h3>
+    <p>Target 模型主干后附加 N 个 MTP Module，每个模块含 Transformer 层，<strong>共享 target 的 embed_tokens 和 lm_head</strong>，第 k 个模块预测 token[t+k]。</p>
+    <div class="arch">
+      <div class="albl">MTP 模型结构（N=3）</div>
+      <div class="arow">
+        <div class="ab abgy f60">Embed<br><small>共享</small></div>
+        <div class="aar">→</div>
+        <div class="ab abbl f2">Target Transformer 共 L 层<br><small>输出 hidden_states H_t</small></div>
+        <div class="aar">→</div>
+        <div class="ab abgr f60">lm_head<br><small>共享</small></div>
+      </div>
+      <div class="albl">MTP 模块链（共享 embed_tokens + lm_head）↓</div>
+      <div class="arow">
+        <div class="ab abpu">MTP Module 1<br><small>offset=1<br>token[1:]+H[:-1]<br>→h1 draft1</small></div>
+        <div class="aar">→</div>
+        <div class="ab abpu">MTP Module 2<br><small>offset=2<br>token[2:]+h1[:-1]<br>→h2 draft2</small></div>
+        <div class="aar">→</div>
+        <div class="ab abpu">MTP Module N<br><small>offset=N<br>token[N:]+hN-1[:-1]<br>→hN draftN</small></div>
+      </div>
+    </div>
+
+    <h4>MTP Module 内部结构</h4>
+    <div class="mermaid">
+graph LR
+    A["input_ids shifted +k"] --> C["embed_tokens shared"]
+    B["past_hidden H_t-k+1..t"] --> D["enorm LayerNorm + linear"]
+    C --> E["Concat 2H"]
+    D --> E
+    E --> F["Linear 2H to H"]
+    F --> G["Transformer Layer\nSelf-Attn + FFN"]
+    G --> H["output hidden h_k"]
+    H --> I["shared_head lm_head\nH to vocab"]
+    I --> J["draft_token_k argmax"]
+
+    style A fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style B fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style C fill:#21262d,color:#e6edf3,stroke:#30363d
+    style D fill:#21262d,color:#e6edf3,stroke:#30363d
+    style E fill:#21262d,color:#e6edf3,stroke:#30363d
+    style F fill:#21262d,color:#e6edf3,stroke:#30363d
+    style G fill:#1a3a20,color:#3fb950,stroke:#3fb950
+    style H fill:#21262d,color:#e6edf3,stroke:#30363d
+    style I fill:#3a2a10,color:#ffa657,stroke:#ffa657
+    style J fill:#3a2a10,color:#ffa657,stroke:#ffa657
+    </div>
+  </div>
+
+  <div id="s52">
+    <h3>5.2 MTPHiddenStatesManager</h3>
+    <span class="fp">tensorrt_llm/_torch/speculative/mtp.py</span>
+    <div class="mermaid">
+graph TD
+    HM["MTPHiddenStatesManager"]
+    HM --> HS["mtp_past_hidden_states_pool\nTensor: max_requests x num_mtp_layers x hidden_size\nbfloat16 on cuda\n存每个 request 最近 N 步 target hidden"]
+    HM --> TK["mtp_past_tokens_pool\nTensor: max_requests x num_mtp_layers\nint32\n对应历史 token ids"]
+    HM --> SM2["slot_manager SlotManager\nrequest_id to slot_id"]
+    HM --> RD["mtp_relaxed_delta_pool optional\nTensor: max_requests\nrelaxed acceptance 动态 delta 阈值"]
+    HS --> UP["update_mtp_hidden_states 更新逻辑\ncontext: past = hidden[seq_end-N:seq_end]\ngeneration: past = hidden[num_accepted-N:num_accepted]"]
+    TK --> UP
+
+    style HM fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style HS fill:#21262d,color:#e6edf3,stroke:#30363d
+    style TK fill:#21262d,color:#e6edf3,stroke:#30363d
+    style SM2 fill:#21262d,color:#e6edf3,stroke:#30363d
+    style RD fill:#21262d,color:#e6edf3,stroke:#30363d
+    </div>
+  </div>
+
+  <div id="s53">
+    <h3>5.3 MTPWorker 执行流程</h3>
+    <div class="mermaid">
+sequenceDiagram
+    participant ME as ModelEngine
+    participant TM as Target Model L layers
+    participant W as MTPWorker
+    participant HM as MTPHiddenStatesManager
+    participant ML as MTP Module 1 to N
+
+    Note over ME,ML: Generation Step with N draft tokens
+    ME->>TM: forward input_ids=[last_accepted + d1..dN] attn spec
+    Note over TM: 输入 N+1 个 token 输出 N+1 个 logits 和 hidden
+    TM-->>ME: logits[N+1, vocab] hidden_states[N+1, H]
+    ME->>W: worker.forward input_ids pos hidden logits attn spec
+
+    W->>W: sample_and_accept_draft_tokens
+    Note over W: logits argmax to target_tokens[N+1]\ncumprod 连续前缀匹配 draft_tokens[N]\nnum_accepted = 1 + 连续匹配数
+
+    W->>HM: update_mtp_hidden_states
+    Note over HM: 接受了 k 个 token\npast_tokens[slot] = input_ids[k-N:k]\npast_hidden[slot] = hidden_states[k-N:k]
+
+    W->>W: prepare_drafter_inputs
+    Note over W: gen: input_ids=accepted[-N:] hidden=past_hidden[slot]\nctx: input_ids=prompt[1:]+golden hidden=target_hidden
+
+    W->>W: change_attn_metadata seq_lens=N
+
+    loop i=0 to N-1
+        W->>ML: mtp_layer embed_tokens input_ids pos hidden attn
+        Note over ML: concat embed hidden to 2H then proj to H then TransformerLayer
+        ML-->>W: new_hidden[N, H]
+        W->>ML: mtp_layer.shared_head new_hidden lm_head
+        ML-->>W: mtp_logits[N, vocab]
+        W->>W: draft_token_i = argmax mtp_logits[last_token_idx]
+        W->>W: slide update: input_ids shift left append draft_token_i\nhidden shift left append new_hidden[last]
+    end
+
+    W->>W: restore_attn_metadata
+    W-->>ME: accepted_tokens[k] num_accepted next_draft_tokens[N] next_new_tokens
+    </div>
+  </div>
+
+  <div id="s54">
+    <h3>5.4 完整示例推导（N=3，prompt=ABCD）</h3>
+    <div class="card">
+      <h4>Context Phase</h4>
+      <div class="mermaid">
+graph LR
+    subgraph target["Target Model"]
+        ti["input: A B C D"] --> to["golden: E\nhidden: HA HB HC HD"]
+    end
+    subgraph mtp1["MTP Module 1"]
+        m1i["tokens: B C D E\nhidden: HA HB HC HD"] --> m1o["draft1: F\nhidden: hB hC hD hE"]
+    end
+    subgraph mtp2["MTP Module 2"]
+        m2i["tokens: C D E F\nhidden: HB HC HD hE"] --> m2o["draft2: G\nhidden: hC hD hE hF"]
+    end
+    subgraph mtp3["MTP Module 3"]
+        m3i["tokens: D E F G\nhidden: HC HD hE hF"] --> m3o["draft3: H\nhidden: hD hE hF hG"]
+    end
+    target --> mtp1 --> mtp2 --> mtp3
+
+    style ti fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style to fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style m1i fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style m1o fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style m2i fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style m2o fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style m3i fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style m3o fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+      </div>
+      <pre><code><span class="cmt"># Context 完成后状态（存入 MTPHiddenStatesManager）</span>
+past_tokens = [D, E, F]        <span class="cmt"># 最近 N=3 个 token</span>
+past_hidden = [HC, HD, hE]     <span class="cmt"># 对应 hidden states</span>
+next_draft_tokens = [F, G, H]  <span class="cmt"># 发给 target 下一轮验证</span></code></pre>
+    </div>
+
+    <div class="card">
+      <h4>Generation Phase 1 — 接受 F G 拒绝 H（接受2个 draft）</h4>
+      <pre><code><span class="cmt"># Target 输入: E F G H  (last_accepted + 3 drafts)</span>
+target_logits → argmax → [F, G, X, Y]
+
+<span class="cmt"># 验证：</span>
+<span class="cmt"># draft[0]=F == target[0]=F  ✓</span>
+<span class="cmt"># draft[1]=G == target[1]=G  ✓</span>
+<span class="cmt"># draft[2]=H != target[2]=X  ✗  停止</span>
+<span class="cmt"># num_accepted = 2+1 = 3（2个draft + 1个golden X）</span>
+
+<span class="cmt"># update_mtp_hidden_states: k=3</span>
+<span class="cmt"># past_tokens[slot] = input_ids[0:3] = [E, F, G]</span>
+<span class="cmt"># past_hidden[slot] = hidden[0:3]    = [HE, HF, HG]</span>
+
+<span class="cmt"># MTP Module 1: tokens=[F,G,X] + hidden=[HE,HF,HG] → draft N</span>
+<span class="cmt"># MTP Module 2: tokens=[G,X,N] + hidden=[HF,HG,hX] → draft O</span>
+<span class="cmt"># MTP Module 3: tokens=[X,N,O] + hidden=[HG,hX,hN] → draft P</span>
+<span class="cmt"># next_draft_tokens = [N, O, P]</span></code></pre>
+    </div>
+
+    <div class="card">
+      <h4>Relaxed Acceptance（DeepSeek-R1 思考模式）</h4>
+      <pre><code><span class="cmt"># 标准接受：draft[i] == argmax(target_logits[i])</span>
+<span class="cmt"># 宽松接受：draft[i] ∈ top-K(target_logits[i])</span>
+<span class="cmt">#           且 P(draft[i]) >= delta × P(top1)</span>
+<span class="cmt"># delta 动态调整：接受率高 → 增大 delta（更严格）</span>
+<span class="cmt">#                接受率低 → 减小 delta（更宽松）</span>
+<span class="cmt"># topk_kernel 用 @torch.compile 加速</span></code></pre>
+    </div>
+  </div>
+</div>
+
+<!-- 6 -->
+<div class="sec" id="s6">
+  <h2>6. 对比总结</h2>
+  <table>
+    <tr>
+      <th>维度</th>
+      <th>Eagle TRT Backend</th>
+      <th>Eagle3 Torch Backend</th>
+      <th>MTP Torch Backend</th>
+    </tr>
+    <tr>
+      <td><strong>Draft 来源</strong></td>
+      <td>独立 Eagle 网络（LLaMA 结构），TRT 引擎</td>
+      <td>独立 Eagle 网络 or 附加层（OneModel）</td>
+      <td>Target 附加 N 个 MTP 模块（共享 embed+lm_head）</td>
+    </tr>
+    <tr>
+      <td><strong>隐状态利用</strong></td>
+      <td>仅最后一层 hidden（PrepareDrafterInputs Plugin）</td>
+      <td>3层 hidden 拼接（浅/中/深），eagle3_fc 压缩</td>
+      <td>最近 N 步 hidden pool（滑动窗口逐层滚动）</td>
+    </tr>
+    <tr>
+      <td><strong>Token 树</strong></td>
+      <td>静态（eagle_choices）或动态（topK 扩展）</td>
+      <td>线性树 / 静态树（eagle_choices）</td>
+      <td>主要线性树（N 步）</td>
+    </tr>
+    <tr>
+      <td><strong>引擎数</strong></td>
+      <td>必须 2（TRT target + TRT Eagle）</td>
+      <td>1 或 2（OneModel / TwoModel）</td>
+      <td>主要 1（MTP 层内嵌）</td>
+    </tr>
+    <tr>
+      <td><strong>KV Cache</strong></td>
+      <td>Target + Eagle 各自独立，EagleBuffers 管理</td>
+      <td>TwoModel 各自独立（draft 需 recompute）；OneModel 可选分离</td>
+      <td>共享 KV cache，OneModel 需 rewind</td>
+    </tr>
+    <tr>
+      <td><strong>CUDA Graph</strong></td>
+      <td>TRT Engine 自动</td>
+      <td>CDL 整体可捕获</td>
+      <td>MTPWorker 整体可捕获</td>
+    </tr>
+    <tr>
+      <td><strong>跨步骤状态</strong></td>
+      <td>EagleBuffers（draft tokens, kv lengths）</td>
+      <td>Eagle3ResourceManager（hidden buffer + indices）</td>
+      <td>MTPHiddenStatesManager（past hidden + past tokens）</td>
+    </tr>
+    <tr>
+      <td><strong>接受算法</strong></td>
+      <td>greedy / multinomial / typical acceptance</td>
+      <td>greedy cumprod 前缀</td>
+      <td>greedy / relaxed acceptance（top-K 范围）</td>
+    </tr>
+    <tr>
+      <td><strong>典型模型</strong></td>
+      <td>Vicuna, Llama（Eagle-2）</td>
+      <td>Llama-3.1, Qwen（Eagle3）</td>
+      <td>DeepSeek-V3 / R1</td>
+    </tr>
+    <tr>
+      <td><strong>关键 Python 文件</strong></td>
+      <td><code>models/eagle/model.py</code></td>
+      <td><code>_torch/speculative/eagle3.py</code><br><code>_torch/speculative/drafting_loops.py</code></td>
+      <td><code>_torch/speculative/mtp.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>关键 C++ 文件</strong></td>
+      <td><code>layers/eagleDecodingLayer.cpp</code><br><code>runtime/eagleBuffers.cpp</code><br><code>plugins/eaglePlugin/*.cpp</code></td>
+      <td>共享 C++ 调度器</td>
+      <td><code>kernels/.../mtpKernels.cu</code></td>
+    </tr>
+  </table>
+
+  <h3>三后端整体架构对比</h3>
+  <div class="mermaid">
+graph TB
+    subgraph eagleTRT["Eagle TRT Backend"]
+        et["Target LLaMA TRT Engine"]
+        ep1["Plugin SampleAndAccept"]
+        ep2["Plugin PrepareDrafterInputs"]
+        ed["EagleNet x N TRT Engine"]
+        ep3["Plugin DecodeDraftTokens x N"]
+        ec["C++ EagleDecodingLayer + EagleBuffers"]
+        et --> ep1 --> ep2 --> ed --> ep3
+        ep3 -.->|next draft loop| ed
+        ec -.->|manage batch mask| ep1
+    end
+
+    subgraph eagle3Torch["Eagle3 Torch Backend"]
+        e3t["Target Model PyTorch"]
+        e3cap["Hidden State Capture\nlayers 1 N2-1 N-4"]
+        e3rm["Eagle3ResourceManager\nhidden buffer + indices"]
+        e3fc["eagle3_fc 3H to H"]
+        e3w["Eagle3OneModelWorker or\nLinearDraftingLoop CDL"]
+        e3d["Draft Eagle Layers"]
+        e3t --> e3cap --> e3rm --> e3fc --> e3w --> e3d
+        e3d -.->|K draft tokens| e3t
+    end
+
+    subgraph mtpTorch["MTP Torch Backend"]
+        mt["Target Model PyTorch"]
+        mhm["MTPHiddenStatesManager\npast hidden pool"]
+        mw["MTPWorker"]
+        mm1["MTP Module 1"]
+        mm2["MTP Module 2"]
+        mmn["MTP Module N"]
+        mlh["Shared lm_head"]
+        mt --> mhm --> mw --> mm1 --> mm2 --> mmn
+        mm1 --> mlh
+        mm2 --> mlh
+        mmn --> mlh
+        mlh -.->|N draft tokens| mt
+    end
+
+    style et  fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style ed  fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style ep1 fill:#3a2a10,color:#ffa657,stroke:#ffa657
+    style ep2 fill:#3a2a10,color:#ffa657,stroke:#ffa657
+    style ep3 fill:#3a2a10,color:#ffa657,stroke:#ffa657
+    style ec  fill:#1a3a20,color:#3fb950,stroke:#3fb950
+    style e3t  fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style e3d  fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style e3rm fill:#1a3a20,color:#3fb950,stroke:#3fb950
+    style e3w  fill:#2a2510,color:#e3b341,stroke:#e3b341
+    style e3fc fill:#3a2a10,color:#ffa657,stroke:#ffa657
+    style e3cap fill:#1a3a20,color:#3fb950,stroke:#3fb950
+    style mt  fill:#1a3a5c,color:#58a6ff,stroke:#58a6ff
+    style mm1 fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style mm2 fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style mmn fill:#2a1a4a,color:#bc8cff,stroke:#bc8cff
+    style mhm fill:#1a3a20,color:#3fb950,stroke:#3fb950
+    style mlh fill:#3a2a10,color:#ffa657,stroke:#ffa657
+  </div>
+</div>
+
+<div style="text-align:center;padding:32px;color:var(--text2);font-size:.8rem;border-top:1px solid var(--border);">
+  TensorRT-LLM Speculative Decoding Code Design &mdash; 基于 main branch 源码 &mdash; 2026-03
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#1a3a5c',
+    primaryTextColor: '#e6edf3',
+    primaryBorderColor: '#58a6ff',
+    lineColor: '#8b949e',
+    secondaryColor: '#21262d',
+    tertiaryColor: '#161b22',
+    background: '#0d1117',
+    fontFamily: 'Consolas, monospace',
+    fontSize: '12px',
+    actorBkg: '#1a3a5c',
+    actorBorder: '#58a6ff',
+    actorTextColor: '#e6edf3',
+    activationBkgColor: '#21262d',
+    activationBorderColor: '#58a6ff',
+    loopTextColor: '#8b949e',
+    noteBkgColor: '#2a2510',
+    noteTextColor: '#e3b341',
+    noteBorderColor: '#e3b341',
+    clusterBkg: '#161b22',
+    clusterBorder: '#30363d',
+  },
+  sequence: {
+    diagramMarginX: 16,
+    diagramMarginY: 16,
+    actorMargin: 40,
+    width: 160,
+    height: 44,
+    boxMargin: 8,
+    noteMargin: 8,
+    messageMargin: 30,
+    wrap: true,
+    wrapPadding: 8,
+  },
+  flowchart: { htmlLabels: false, curve: 'linear', padding: 14 }
+});
+</script>
+</body>
+</html>

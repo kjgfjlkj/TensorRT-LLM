@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TensorRT-LLM · Speculative Decoding · 两种后端对比</title>
+<style>
+:root {
+  --bg:      #0d1117;
+  --bg2:     #161b27;
+  --bg3:     #1e2638;
+  --trt:     #76b900;   /* NVIDIA green → TRT */
+  --torch:   #ee4c2c;   /* PyTorch red → Torch */
+  --both:    #00b4d8;   /* shared */
+  --grey:    #3a4255;
+  --text:    #dde3f0;
+  --text2:   #7a8aaa;
+  --border:  #262e44;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.5;}
+
+/* ── header ── */
+header{
+  display:flex;align-items:center;gap:24px;
+  padding:24px 48px;
+  background:linear-gradient(135deg,#0d1117 0%,#151d30 100%);
+  border-bottom:1px solid var(--border);
+}
+.hdr-left h1{font-size:22px;font-weight:700;color:#fff;letter-spacing:.5px;}
+.hdr-left h1 em{font-style:normal;color:var(--both);}
+.hdr-left p{font-size:12px;color:var(--text2);margin-top:4px;}
+.legend{display:flex;gap:18px;margin-left:auto;flex-wrap:wrap;}
+.leg{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);}
+.dot{width:12px;height:12px;border-radius:50%;}
+
+/* ── layout ── */
+main{max-width:1340px;margin:0 auto;padding:36px 48px;}
+section{margin-bottom:56px;}
+h2{font-size:15px;font-weight:700;letter-spacing:.5px;margin-bottom:20px;padding-bottom:8px;
+   border-bottom:1px solid var(--border);color:var(--text2);text-transform:uppercase;}
+
+/* ════════════════ 1. SIDE-BY-SIDE ALGO MAP ════════════════ */
+.cols{display:grid;grid-template-columns:1fr 52px 1fr;gap:0;align-items:start;}
+.col-hdr{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  padding:14px 20px;border-radius:10px 10px 0 0;font-size:15px;font-weight:700;
+}
+.col-hdr.trt  {background:rgba(118,185,0,.12);color:var(--trt);border:1.5px solid var(--trt);border-bottom:none;}
+.col-hdr.torch{background:rgba(238,76,44,.12);color:var(--torch);border:1.5px solid var(--torch);border-bottom:none;}
+.col-body{
+  border-radius:0 0 10px 10px;padding:20px 18px;
+  display:flex;flex-direction:column;gap:10px;
+}
+.col-body.trt  {background:rgba(118,185,0,.04);border:1.5px solid var(--trt);border-top:none;}
+.col-body.torch{background:rgba(238,76,44,.04);border:1.5px solid var(--torch);border-top:none;}
+
+.mid-col{display:flex;flex-direction:column;align-items:center;padding-top:64px;gap:0;}
+
+/* algo pill */
+.algo{
+  border-radius:8px;padding:10px 14px;cursor:default;
+  display:flex;align-items:center;gap:10px;transition:transform .15s;
+}
+.algo:hover{transform:translateX(4px);}
+.algo .icon{font-size:20px;flex-shrink:0;}
+.algo .name{font-weight:700;font-size:13px;}
+.algo .note{font-size:11.5px;opacity:.75;margin-top:2px;}
+.algo-trt  {background:rgba(118,185,0,.12);border:1px solid rgba(118,185,0,.4);}
+.algo-torch{background:rgba(238,76,44,.12);border:1px solid rgba(238,76,44,.4);}
+.algo-both {background:rgba(0,180,216,.10);border:1px solid rgba(0,180,216,.4);}
+.algo-trt   .name{color:var(--trt);}
+.algo-torch .name{color:var(--torch);}
+.algo-both  .name{color:var(--both);}
+
+/* connector arrows between columns */
+.conn-row{display:flex;align-items:center;gap:0;margin-bottom:10px;position:relative;}
+.conn-line{
+  height:2px;flex:1;
+  background:linear-gradient(90deg,var(--both) 0%,var(--both) 100%);
+  opacity:.5;
+}
+.conn-dot{width:8px;height:8px;border-radius:50%;background:var(--both);flex-shrink:0;}
+
+/* ════════════════ 2. FEATURE MATRIX ════════════════ */
+.matrix{width:100%;border-collapse:collapse;font-size:13px;}
+.matrix th{
+  padding:10px 14px;text-align:left;
+  border:1px solid var(--border);
+  background:var(--bg3);font-size:11px;
+  text-transform:uppercase;letter-spacing:.6px;color:var(--text2);
+  font-weight:700;
+}
+.matrix td{padding:9px 14px;border:1px solid var(--border);vertical-align:middle;}
+.matrix tr:nth-child(even) td{background:rgba(255,255,255,.02);}
+.matrix tr:hover td{background:rgba(255,255,255,.03);}
+.matrix .algo-col{font-weight:700;font-size:12.5px;}
+.matrix .algo-col.trt  {color:var(--trt);}
+.matrix .algo-col.torch{color:var(--torch);}
+.matrix .algo-col.both {color:var(--both);}
+
+/* cell badges */
+.yes{display:inline-flex;align-items:center;justify-content:center;
+     width:22px;height:22px;border-radius:50%;
+     background:rgba(0,230,118,.15);color:#00e676;font-size:13px;font-weight:700;}
+.no {display:inline-flex;align-items:center;justify-content:center;
+     width:22px;height:22px;border-radius:50%;
+     background:rgba(255,80,80,.10);color:#666;font-size:13px;}
+.part{display:inline-flex;align-items:center;justify-content:center;
+      width:22px;height:22px;border-radius:50%;
+      background:rgba(255,180,0,.12);color:#ffa726;font-size:11px;font-weight:700;}
+.col-trt  {background:rgba(118,185,0,.04)!important;}
+.col-torch{background:rgba(238,76,44,.04)!important;}
+
+/* ════════════════ 3. ARCHITECTURE FLOW ════════════════ */
+.arch-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;}
+.arch-card{
+  background:var(--bg2);border-radius:12px;padding:24px;
+  border:1.5px solid var(--border);
+}
+.arch-card.trt  {border-color:rgba(118,185,0,.4);}
+.arch-card.torch{border-color:rgba(238,76,44,.4);}
+.arch-title{
+  font-size:14px;font-weight:700;margin-bottom:18px;
+  display:flex;align-items:center;gap:8px;
+}
+.arch-title.trt  {color:var(--trt);}
+.arch-title.torch{color:var(--torch);}
+
+/* flow nodes */
+.flow{display:flex;flex-direction:column;align-items:center;gap:0;}
+.fn{
+  width:100%;border-radius:8px;padding:9px 14px;
+  text-align:center;font-size:12.5px;font-weight:600;
+  position:relative;
+}
+.fn.trt-node  {background:rgba(118,185,0,.12);border:1px solid rgba(118,185,0,.35);color:var(--trt);}
+.fn.torch-node{background:rgba(238,76,44,.10);border:1px solid rgba(238,76,44,.3);color:var(--torch);}
+.fn.shared-node{background:rgba(0,180,216,.08);border:1px solid rgba(0,180,216,.3);color:var(--both);}
+.fn.grey-node  {background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--text2);}
+.fn sub{font-size:10px;font-weight:400;opacity:.75;display:block;margin-top:2px;}
+.arrow-down{
+  width:2px;height:20px;background:var(--border);
+  position:relative;margin:0 auto;
+}
+.arrow-down::after{
+  content:'';position:absolute;bottom:-5px;left:-4px;
+  border-left:5px solid transparent;border-right:5px solid transparent;
+  border-top:6px solid var(--border);
+}
+.branch{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;}
+.branch-label{font-size:10px;color:var(--text2);text-align:center;margin-bottom:4px;}
+.fn-small{
+  border-radius:6px;padding:7px 10px;
+  text-align:center;font-size:11px;font-weight:600;
+}
+.fn-small.trt-node  {background:rgba(118,185,0,.12);border:1px solid rgba(118,185,0,.3);color:var(--trt);}
+.fn-small.torch-node{background:rgba(238,76,44,.10);border:1px solid rgba(238,76,44,.25);color:var(--torch);}
+
+/* ════════════════ 4. INTERNAL MODES ════════════════ */
+.mode-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+.mode-card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;
+}
+.mode-card h4{font-size:13px;font-weight:700;margin-bottom:6px;}
+.mode-card p{font-size:11.5px;color:var(--text2);line-height:1.5;}
+.mode-card .badge-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.badge{
+  display:inline-block;font-size:10px;font-weight:700;
+  padding:2px 8px;border-radius:10px;letter-spacing:.4px;
+}
+.badge.trt  {background:rgba(118,185,0,.18);color:var(--trt);}
+.badge.torch{background:rgba(238,76,44,.18);color:var(--torch);}
+.badge.shared{background:rgba(0,180,216,.15);color:var(--both);}
+.badge.dim  {background:rgba(255,255,255,.07);color:var(--text2);}
+
+/* ════════════════ 5. UNIQUE CAPABILITIES ════════════════ */
+.caps-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;}
+.caps-col{background:var(--bg2);border-radius:12px;padding:20px;}
+.caps-col.trt  {border:1.5px solid rgba(118,185,0,.35);}
+.caps-col.torch{border:1.5px solid rgba(238,76,44,.3);}
+.caps-title{font-size:13px;font-weight:700;margin-bottom:14px;}
+.caps-title.trt  {color:var(--trt);}
+.caps-title.torch{color:var(--torch);}
+.cap-item{
+  display:flex;align-items:flex-start;gap:10px;
+  padding:9px 0;border-bottom:1px solid var(--border);
+}
+.cap-item:last-child{border-bottom:none;}
+.cap-icon{font-size:17px;flex-shrink:0;margin-top:1px;}
+.cap-text .cap-name{font-size:12.5px;font-weight:600;color:var(--text);}
+.cap-text .cap-desc{font-size:11.5px;color:var(--text2);margin-top:2px;}
+
+/* ── responsive ── */
+@media(max-width:960px){
+  .arch-grid,.caps-grid{grid-template-columns:1fr;}
+  .cols{grid-template-columns:1fr;gap:16px;}
+  .mid-col{display:none;}
+  .mode-grid{grid-template-columns:1fr 1fr;}
+  main{padding:24px;}
+}
+@media(max-width:600px){
+  .mode-grid{grid-template-columns:1fr;}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hdr-left">
+    <h1>TensorRT-LLM · Speculative Decoding · <em>双后端对比</em></h1>
+    <p>PyTorch 后端 vs TensorRT 后端 — 算法支持、内部机制、独有能力全览</p>
+  </div>
+  <div class="legend">
+    <div class="leg"><div class="dot" style="background:var(--trt)"></div>TensorRT 后端独有</div>
+    <div class="leg"><div class="dot" style="background:var(--torch)"></div>PyTorch 后端独有</div>
+    <div class="leg"><div class="dot" style="background:var(--both)"></div>两者均支持</div>
+  </div>
+</header>
+
+<main>
+
+<!-- ═══════════ § 1  ALGORITHM MAP ═══════════ -->
+<section>
+  <h2>§ 1 · 算法支持地图</h2>
+  <div class="cols">
+
+    <!-- TRT 列 -->
+    <div>
+      <div class="col-hdr trt">
+        <span>⚙️</span> TensorRT 后端
+      </div>
+      <div class="col-body trt">
+        <div class="algo algo-trt">
+          <span class="icon">🧠</span>
+          <div>
+            <div class="name">Medusa</div>
+            <div class="note">多头并行预测 · 树形草稿 · 有草稿 logits<br>配置类: MedusaDecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-trt">
+          <span class="icon">👁️</span>
+          <div>
+            <div class="name">Lookahead Decoding</div>
+            <div class="note">Jacobi 迭代 · 无需额外模型 · 更新位置 ID<br>配置类: LookaheadDecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-trt">
+          <span class="icon">📋</span>
+          <div>
+            <div class="name">ExplicitDraftTokens</div>
+            <div class="note">ReDrafter 风格 · 需 Decoder Prologue<br>内部模式 (C++ kExplicitDraftTokens)</div>
+          </div>
+        </div>
+        <div class="algo algo-both">
+          <span class="icon">🦅</span>
+          <div>
+            <div class="name">Eagle v1 / v2</div>
+            <div class="note">EagleDecodingConfig → TRT kEagle 模式<br>动态树 (Eagle-2) · 静态树可选</div>
+          </div>
+        </div>
+        <div class="algo algo-both">
+          <span class="icon">🎯</span>
+          <div>
+            <div class="name">Draft-Target (外部编排)</div>
+            <div class="note">两个独立 Executor 实例<br>用户手动编排草稿→验证循环</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中间连接器 -->
+    <div class="mid-col">
+      <!-- Eagle overlap -->
+      <div style="height:210px;"></div>
+      <div class="conn-row" style="width:100%;">
+        <div class="conn-dot"></div>
+        <div class="conn-line"></div>
+        <div class="conn-dot"></div>
+      </div>
+      <div style="height:10px;font-size:10px;color:var(--both);text-align:center;">Eagle</div>
+      <div style="height:22px;"></div>
+      <div class="conn-row" style="width:100%;">
+        <div class="conn-dot"></div>
+        <div class="conn-line"></div>
+        <div class="conn-dot"></div>
+      </div>
+      <div style="height:10px;font-size:10px;color:var(--both);text-align:center;">D-T</div>
+    </div>
+
+    <!-- PyTorch 列 -->
+    <div>
+      <div class="col-hdr torch">
+        <span>🔥</span> PyTorch 后端
+      </div>
+      <div class="col-body torch">
+        <div class="algo algo-torch">
+          <span class="icon">🦅</span>
+          <div>
+            <div class="name">Eagle3 (最新)</div>
+            <div class="note">单引擎 / 双引擎 · 捕获隐状态 · OneModel<br>配置类: Eagle3DecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-torch">
+          <span class="icon">🔀</span>
+          <div>
+            <div class="name">MTP (Multi-Token Prediction)</div>
+            <div class="note">DeepSeek 专用 · 放宽接受 · EAGLE-style<br>配置类: MTPDecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-torch">
+          <span class="icon">🔡</span>
+          <div>
+            <div class="name">NGram (Prompt Lookup)</div>
+            <div class="note">无需额外模型 · 公共/私有 n-gram 池<br>配置类: NGramDecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-torch">
+          <span class="icon">🌲</span>
+          <div>
+            <div class="name">SA (Suffix Automaton)</div>
+            <div class="note">GPU 原生后缀自动机 · CUDA Graph<br>配置类: SADecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-torch">
+          <span class="icon">⚡</span>
+          <div>
+            <div class="name">PARD (并行自回归草稿)</div>
+            <div class="note">目标无关 · 单次前向生成 K 草稿<br>配置类: PARDDecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-torch">
+          <span class="icon">✨</span>
+          <div>
+            <div class="name">Auto (启发式自动选择)</div>
+            <div class="note">根据模型架构自动推荐算法<br>配置类: AutoDecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-torch">
+          <span class="icon">🛠️</span>
+          <div>
+            <div class="name">UserProvided (自定义)</div>
+            <div class="note">实现 Drafter 接口即可接入<br>配置类: UserProvidedDecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-both">
+          <span class="icon">🦅</span>
+          <div>
+            <div class="name">Eagle (→ 自动转 Eagle3)</div>
+            <div class="note">EagleDecodingConfig 在 PyTorch 后端<br>自动升级为 Eagle3DecodingConfig</div>
+          </div>
+        </div>
+        <div class="algo algo-both">
+          <span class="icon">🎯</span>
+          <div>
+            <div class="name">DraftTarget (内置单引擎)</div>
+            <div class="note">DraftTargetDecodingConfig<br>单引擎 OneModel 实现 · Overlap Scheduler</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /cols -->
+</section>
+
+<!-- ═══════════ § 2  FEATURE MATRIX ═══════════ -->
+<section>
+  <h2>§ 2 · 特性矩阵对比</h2>
+  <div style="overflow-x:auto;">
+  <table class="matrix">
+    <thead>
+      <tr>
+        <th style="min-width:155px;">算法</th>
+        <th>后端</th>
+        <th>无需额外模型</th>
+        <th>树形草稿</th>
+        <th>KV Rewind</th>
+        <th>Overlap Scheduler</th>
+        <th>CUDA Graph</th>
+        <th>放宽接受</th>
+        <th>Guided Decoding</th>
+        <th>变长草稿</th>
+        <th>草稿 Logits</th>
+        <th>隐状态捕获</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- TRT 独有 -->
+      <tr>
+        <td class="algo-col trt">Medusa</td>
+        <td><span class="badge trt">TRT</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col trt">Lookahead Decoding</td>
+        <td><span class="badge trt">TRT</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col trt">ExplicitDraftTokens</td>
+        <td><span class="badge trt">TRT</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="yes">✓</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+        <td class="col-trt"><span class="no">—</span></td>
+      </tr>
+      <!-- Shared -->
+      <tr>
+        <td class="algo-col both">Eagle v1/v2 (TRT)</td>
+        <td><span class="badge shared">Both</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col both">Draft-Target (外部)</td>
+        <td><span class="badge shared">Both</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="no">—</span></td>
+        <td><span class="no">—</span></td>
+      </tr>
+      <!-- PyTorch 独有 -->
+      <tr>
+        <td class="algo-col torch">Eagle3 / Eagle3 OneModel</td>
+        <td><span class="badge torch">Torch</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col torch">MTP (DeepSeek)</td>
+        <td><span class="badge torch">Torch</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col torch">NGram (Prompt Lookup)</td>
+        <td><span class="badge torch">Torch</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col torch">SA (Suffix Automaton)</td>
+        <td><span class="badge torch">Torch</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col torch">PARD</td>
+        <td><span class="badge torch">Torch</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col torch">DraftTarget OneModel</td>
+        <td><span class="badge torch">Torch</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+      </tr>
+      <tr>
+        <td class="algo-col torch">UserProvided</td>
+        <td><span class="badge torch">Torch</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="yes">✓</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+        <td class="col-torch"><span class="no">—</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ═══════════ § 3  ARCHITECTURE FLOW ═══════════ -->
+<section>
+  <h2>§ 3 · 内部执行架构差异</h2>
+  <div class="arch-grid">
+
+    <!-- TRT 架构 -->
+    <div class="arch-card trt">
+      <div class="arch-title trt">⚙️ TensorRT 后端 — 执行架构</div>
+      <div class="flow">
+        <div class="fn shared-node">LLM API · TrtLlmArgs</div>
+        <div class="arrow-down"></div>
+        <div class="fn trt-node">TRT Engine 构建
+          <sub>builder.py · BuildConfig · NVTX</sub>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="fn trt-node">trtllm.Executor (C++)
+          <sub>BatchManager · KV Cache Manager</sub>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="fn trt-node">C++ SpeculativeDecodingMode (位标志)
+          <sub>None / DraftTokensExternal / Medusa / Lookahead / ExplicitDraft / Eagle</sub>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="fn shared-node" style="font-size:11px;">
+          Scheduler → BatchManager → KV Cache → Decoder → Sampling
+        </div>
+        <div class="arrow-down"></div>
+        <div style="width:100%;">
+          <div class="branch-label">内部草稿机制（按模式分叉）</div>
+          <div class="branch">
+            <div class="fn-small trt-node">Medusa Heads<br><span style="font-size:10px;opacity:.7">predictsDraftTokens<br>hasDraftLogits</span></div>
+            <div class="fn-small trt-node">Lookahead<br><span style="font-size:10px;opacity:.7">updatesPositionIds<br>variableDraftLength</span></div>
+            <div class="fn-small trt-node">Eagle kExplicitDraft<br><span style="font-size:10px;opacity:.7">needsDecoderPrologue<br>requiresAttentionMask</span></div>
+            <div class="fn-small trt-node">Eagle kEagle<br><span style="font-size:10px;opacity:.7">v1/v2 · 动态/静态树<br>variableDraftLength</span></div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:16px;padding:10px;background:rgba(118,185,0,.07);border-radius:6px;font-size:11.5px;color:var(--text2);">
+        <strong style="color:var(--trt);">关键设计：</strong>
+        投机解码模式由 C++ 位标志控制，在引擎构建期固定，
+        调度器与验证逻辑深度集成在 BatchManager 中，
+        KV Cache Rewind 由 C++ 层统一管理。
+      </div>
+    </div>
+
+    <!-- PyTorch 架构 -->
+    <div class="arch-card torch">
+      <div class="arch-title torch">🔥 PyTorch 后端 — 执行架构</div>
+      <div class="flow">
+        <div class="fn shared-node">LLM API · TorchLlmArgs</div>
+        <div class="arrow-down"></div>
+        <div class="fn torch-node">PyExecutor (Python)
+          <sub>py_executor.py · PyTorch Engine</sub>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="fn torch-node">SpeculativeDecodingMode (Python 枚举)
+          <sub>MTP / EAGLE3 / NGRAM / SA / PARD / DRAFT_TARGET / USER_PROVIDED …</sub>
+        </div>
+        <div class="arrow-down"></div>
+        <div style="width:100%;">
+          <div class="branch-label">双路径（单引擎 vs 双引擎）</div>
+          <div class="branch">
+            <div class="fn-small torch-node">单引擎 (use_one_engine)<br><span style="font-size:10px;opacity:.7">MTP / Eagle3-1M / SA / PARD<br>草稿头嵌入目标模型中</span></div>
+            <div class="fn-small torch-node">双引擎 (2-Model)<br><span style="font-size:10px;opacity:.7">Eagle3-2M / MTPEagle<br>草稿引擎独立运行</span></div>
+          </div>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="fn torch-node">SpecWorkerBase.forward()
+          <sub>MTPWorker / Eagle3Worker / SAWorker / NGramDrafter …</sub>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="fn torch-node">SpecSamplerBase.sample_async()
+          <sub>异步 GPU→CPU 拷贝 · 预分配 buffer · 接受率滚动统计</sub>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="fn shared-node" style="font-size:11px;">
+          SpeculationGate · KV Rewind · Overlap Scheduler · CUDA Graph
+        </div>
+      </div>
+      <div style="margin-top:16px;padding:10px;background:rgba(238,76,44,.07);border-radius:6px;font-size:11.5px;color:var(--text2);">
+        <strong style="color:var(--torch);">关键设计：</strong>
+        完全 Python 层实现，算法以 Worker/Sampler 插件形式注册，
+        运行时可动态选择；SpeculationGate 在接受率过低时自适应禁用；
+        SaveHiddenStates 机制供 Eagle3 捕获目标模型中间层。
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ § 4  INTERNAL C++ MODES ═══════════ -->
+<section>
+  <h2>§ 4 · TRT 后端内部模式详解（C++ 位标志）</h2>
+  <div class="mode-grid">
+    <div class="mode-card">
+      <h4 style="color:var(--text2);">None</h4>
+      <p>标准自回归解码，无投机。每次迭代仅生成 1 个 token。</p>
+      <div class="badge-row">
+        <span class="badge trt">TRT</span>
+        <span class="badge dim">kNone = bit 0</span>
+      </div>
+    </div>
+    <div class="mode-card">
+      <h4 style="color:var(--trt);">DraftTokensExternal</h4>
+      <p>草稿 token 由外部系统提供（用户编排双 Executor 模式）。目标模型仅负责验证。草稿长度可变。</p>
+      <div class="badge-row">
+        <span class="badge trt">TRT</span>
+        <span class="badge dim">kDraftTokensExternal = bit 1</span>
+        <span class="badge dim">variableDraftLength</span>
+      </div>
+    </div>
+    <div class="mode-card">
+      <h4 style="color:var(--trt);">Medusa</h4>
+      <p>模型内置多个额外语言模型头，每个头预测不同位置的 token。头的输出形成草稿树（树形注意力掩码）。有独立的草稿 logits。</p>
+      <div class="badge-row">
+        <span class="badge trt">TRT</span>
+        <span class="badge dim">kMedusa = bit 2</span>
+        <span class="badge dim">hasDraftLogits</span>
+        <span class="badge dim">requiresAttentionMask</span>
+        <span class="badge dim">needsKVCacheRewind</span>
+      </div>
+    </div>
+    <div class="mode-card">
+      <h4 style="color:var(--trt);">LookaheadDecoding</h4>
+      <p>Jacobi 迭代式解码，无需额外模型。通过并行猜测多个 token 形成候选序列，同一模型验证。位置 ID 动态更新。</p>
+      <div class="badge-row">
+        <span class="badge trt">TRT</span>
+        <span class="badge dim">kLookaheadDecoding = bit 3</span>
+        <span class="badge dim">updatesPositionIds</span>
+        <span class="badge dim">variableDraftLength</span>
+        <span class="badge dim">needsDecoderPrologue</span>
+      </div>
+    </div>
+    <div class="mode-card">
+      <h4 style="color:var(--trt);">ExplicitDraftTokens</h4>
+      <p>草稿 token 显式传入验证阶段（ReDrafter 风格）。需要 Decoder Prologue 预处理步骤，草稿长度可变。</p>
+      <div class="badge-row">
+        <span class="badge trt">TRT</span>
+        <span class="badge dim">kExplicitDraftTokens = bit 4</span>
+        <span class="badge dim">updatesPositionIds</span>
+        <span class="badge dim">needsDecoderPrologue</span>
+        <span class="badge dim">variableDraftLength</span>
+      </div>
+    </div>
+    <div class="mode-card">
+      <h4 style="color:var(--both);">Eagle (v1 / v2)</h4>
+      <p>EAGLE 算法：草稿模型基于目标模型的 feature（隐状态）自回归预测。Eagle-2 支持动态树。需要注意力掩码和 KV 回退。</p>
+      <div class="badge-row">
+        <span class="badge shared">TRT + Torch</span>
+        <span class="badge dim">kEagle = bit 5</span>
+        <span class="badge dim">requiresAttentionMask</span>
+        <span class="badge dim">needsDecoderPrologue</span>
+        <span class="badge dim">variableDraftLength</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ § 5  UNIQUE CAPABILITIES ═══════════ -->
+<section>
+  <h2>§ 5 · 各自独有能力</h2>
+  <div class="caps-grid">
+    <div class="caps-col trt">
+      <div class="caps-title trt">⚙️ TensorRT 后端 · 独有优势</div>
+      <div class="cap-item">
+        <div class="cap-icon">🧠</div>
+        <div class="cap-text">
+          <div class="cap-name">Medusa 多头树形草稿</div>
+          <div class="cap-desc">TRT 后端独家支持 Medusa 草稿头，有独立草稿 logits；可探索指数级路径同时验证，PyTorch 后端不支持。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">👁️</div>
+        <div class="cap-text">
+          <div class="cap-name">Lookahead Decoding</div>
+          <div class="cap-desc">无需任何额外模型的投机解码方式，通过 Jacobi 迭代生成草稿，TRT 后端原生支持，PyTorch 后端不支持。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">📋</div>
+        <div class="cap-text">
+          <div class="cap-name">ExplicitDraftTokens (ReDrafter)</div>
+          <div class="cap-desc">ReDrafter 风格的草稿机制，通过 Decoder Prologue 流程管理草稿 token，TRT 特有。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">🏗️</div>
+        <div class="cap-text">
+          <div class="cap-name">C++ 层深度集成</div>
+          <div class="cap-desc">投机解码逻辑嵌入 BatchManager/KV Cache C++ 层，调度与验证高度融合，性能更接近底层。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">⛓️</div>
+        <div class="cap-text">
+          <div class="cap-name">Triton Backend 集成</div>
+          <div class="cap-desc">可通过 Triton Inference Server BLS 进行 Draft-Target 编排，支持 gRPC 客户端端到端投机解码。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="caps-col torch">
+      <div class="caps-title torch">🔥 PyTorch 后端 · 独有优势</div>
+      <div class="cap-item">
+        <div class="cap-icon">🦅</div>
+        <div class="cap-text">
+          <div class="cap-name">Eagle3 (最新 EAGLE 算法)</div>
+          <div class="cap-desc">捕获目标模型多层隐状态作为草稿输入，OneModel 单引擎模式大幅简化部署，TRT 后端仅支持 Eagle v1/v2。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">🔀</div>
+        <div class="cap-text">
+          <div class="cap-name">MTP (Multi-Token Prediction)</div>
+          <div class="cap-desc">DeepSeek 专用：多个 MTP 预测层内嵌模型，支持放宽接受（Thinking 阶段），TRT 后端不支持。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">🌲</div>
+        <div class="cap-text">
+          <div class="cap-name">SA (Suffix Automaton)</div>
+          <div class="cap-desc">GPU 原生后缀自动机，支持最长子串匹配，可与 MTP 混合使用（use_sa_spec），CUDA Graph 兼容。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">⚡</div>
+        <div class="cap-text">
+          <div class="cap-name">PARD (并行自回归草稿)</div>
+          <div class="cap-desc">目标无关的草稿方法，单次前向即可并行生成 K 个草稿 token，无需目标模型隐状态。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">🚪</div>
+        <div class="cap-text">
+          <div class="cap-name">SpeculationGate 自适应禁用</div>
+          <div class="cap-desc">滑动窗口监控接受率，低于阈值时永久禁用投机，避免高 batch 下的性能退化，TRT 后端无此机制。</div>
+        </div>
+      </div>
+      <div class="cap-item">
+        <div class="cap-icon">🛠️</div>
+        <div class="cap-text">
+          <div class="cap-name">UserProvided + Auto 可扩展性</div>
+          <div class="cap-desc">实现 Drafter 接口即可接入任意自定义草稿逻辑；Auto 模式根据模型架构启发式推荐算法。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ § 6  EAGLE SPLIT DETAIL ═══════════ -->
+<section>
+  <h2>§ 6 · Eagle 系列在两后端的映射关系</h2>
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:28px;overflow-x:auto;">
+    <div style="display:flex;align-items:flex-start;gap:0;min-width:700px;">
+
+      <!-- 用户配置类 -->
+      <div style="flex:0 0 180px;">
+        <div style="font-size:11px;color:var(--text2);text-align:center;margin-bottom:10px;text-transform:uppercase;letter-spacing:.8px;">用户配置类</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="background:rgba(255,255,255,.07);border:1px solid var(--border);border-radius:7px;padding:9px 12px;font-size:12.5px;font-weight:600;text-align:center;">EagleDecodingConfig<br><span style="font-size:10px;font-weight:400;color:var(--text2);">decoding_type="Eagle"</span></div>
+          <div style="background:rgba(0,180,216,.08);border:1px solid rgba(0,180,216,.3);border-radius:7px;padding:9px 12px;font-size:12.5px;font-weight:600;text-align:center;color:var(--both);">Eagle3DecodingConfig<br><span style="font-size:10px;font-weight:400;color:var(--text2);">decoding_type="Eagle3"</span></div>
+        </div>
+      </div>
+
+      <!-- 箭头区 -->
+      <div style="flex:1;padding:0 20px;display:flex;flex-direction:column;justify-content:space-around;gap:24px;padding-top:35px;">
+        <!-- Eagle → TRT -->
+        <div style="display:flex;align-items:center;gap:0;">
+          <div style="height:2px;flex:1;background:linear-gradient(90deg,var(--border),var(--trt));"></div>
+          <div style="background:rgba(118,185,0,.15);border:1px solid var(--trt);border-radius:4px;padding:3px 8px;font-size:10px;color:var(--trt);white-space:nowrap;margin:0 6px;">TRT 后端</div>
+          <div style="height:2px;flex:1;background:var(--trt);"></div>
+        </div>
+        <!-- Eagle → PyTorch -->
+        <div style="display:flex;align-items:center;gap:0;">
+          <div style="height:2px;flex:1;background:linear-gradient(90deg,var(--border),var(--torch));opacity:.5"></div>
+          <div style="background:rgba(238,76,44,.12);border:1px dashed rgba(238,76,44,.5);border-radius:4px;padding:3px 8px;font-size:10px;color:var(--torch);white-space:nowrap;margin:0 6px;">PyTorch 后端 (自动升级)</div>
+          <div style="height:2px;flex:1;background:var(--torch);"></div>
+        </div>
+        <!-- Eagle3 → PyTorch only -->
+        <div style="display:flex;align-items:center;gap:0;">
+          <div style="height:2px;flex:1;background:linear-gradient(90deg,rgba(0,180,216,.3),var(--both));"></div>
+          <div style="background:rgba(0,180,216,.12);border:1px solid var(--both);border-radius:4px;padding:3px 8px;font-size:10px;color:var(--both);white-space:nowrap;margin:0 6px;">PyTorch 后端专用</div>
+          <div style="height:2px;flex:1;background:var(--both);"></div>
+        </div>
+      </div>
+
+      <!-- 后端内部模式 -->
+      <div style="flex:0 0 280px;">
+        <div style="font-size:11px;color:var(--text2);text-align:center;margin-bottom:10px;text-transform:uppercase;letter-spacing:.8px;">后端内部模式</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="background:rgba(118,185,0,.1);border:1.5px solid rgba(118,185,0,.5);border-radius:7px;padding:9px 12px;font-size:12px;font-weight:600;color:var(--trt);">
+            [TRT] C++ kEagle (Eagle v1/v2)<br>
+            <span style="font-size:10px;font-weight:400;color:var(--text2);">动态树 Eagle-2 · 静态树 · variableDraftLength</span>
+          </div>
+          <div style="background:rgba(238,76,44,.08);border:1px dashed rgba(238,76,44,.4);border-radius:7px;padding:9px 12px;font-size:12px;font-weight:600;color:var(--torch);">
+            [Torch] EAGLE3 / EAGLE3_ONE_MODEL<br>
+            <span style="font-size:10px;font-weight:400;color:var(--text2);">EagleDecodingConfig 在 PyTorch 下自动升级</span>
+          </div>
+          <div style="background:rgba(238,76,44,.10);border:1.5px solid rgba(238,76,44,.5);border-radius:7px;padding:9px 12px;font-size:12px;font-weight:600;color:var(--torch);">
+            [Torch] EAGLE3_ONE_MODEL (默认) / EAGLE3 (2-model)<br>
+            <span style="font-size:10px;font-weight:400;color:var(--text2);">隐状态捕获 · OneModel 单引擎 · Overlap Scheduler</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div style="margin-top:16px;font-size:11.5px;color:var(--text2);padding:10px 14px;background:rgba(255,180,0,.06);border:1px solid rgba(255,180,0,.2);border-radius:6px;">
+      <strong style="color:#ffa726;">注意：</strong>
+      在 PyTorch 后端传入 <code>EagleDecodingConfig(decoding_type="Eagle")</code> 会触发警告并自动转换为 Eagle3DecodingConfig（仅 Eagle3 被 PyTorch 后端支持）。
+      在 TRT 后端使用 <code>Eagle3DecodingConfig</code> 则会报错，TRT 仅支持 Eagle v1/v2（kEagle 位）。
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer style="border-top:1px solid var(--border);padding:16px 48px;font-size:11.5px;color:var(--text2);text-align:center;">
+  TensorRT-LLM · 投机解码双后端对比 · 源码: <code>tensorrt_llm/llmapi/llm_args.py</code> · <code>cpp/include/tensorrt_llm/runtime/speculativeDecodingMode.h</code> · <code>tensorrt_llm/_torch/speculative/</code>
+</footer>
+
+</body>
+</html>
