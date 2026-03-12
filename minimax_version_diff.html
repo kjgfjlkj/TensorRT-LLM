@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniMax M2.1 vs M2.5 版本差异</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --card: #1a1d27;
+  --card2: #21253a;
+  --border: #2e3350;
+  --accent: #6c63ff;
+  --accent2: #00d4aa;
+  --accent3: #ff6b6b;
+  --accent4: #ffd93d;
+  --text: #e2e8f0;
+  --muted: #8892b0;
+  --green: #4ade80;
+  --orange: #fb923c;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.6; }
+
+nav { background: rgba(15,17,23,0.95); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; padding: 0 2rem; display: flex; gap: 0; }
+nav a { color: var(--muted); text-decoration: none; padding: 1rem 1.2rem; font-size: 0.82rem; transition: color 0.2s; border-bottom: 2px solid transparent; white-space: nowrap; }
+nav a:hover, nav a.active { color: var(--accent2); border-bottom-color: var(--accent2); }
+
+.hero { text-align: center; padding: 4rem 2rem 2rem; background: radial-gradient(ellipse at 50% 0%, rgba(0,212,170,0.12) 0%, transparent 70%); }
+.hero h1 { font-size: 2.4rem; font-weight: 800; background: linear-gradient(135deg, #6c63ff, #00d4aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }
+.hero p { color: var(--muted); font-size: 1rem; max-width: 650px; margin: 0 auto 1.5rem; }
+.badge-row { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; }
+.badge { background: var(--card2); border: 1px solid var(--border); border-radius: 999px; padding: 0.3rem 0.9rem; font-size: 0.78rem; color: var(--muted); }
+.badge.hot { border-color: var(--accent2); color: var(--accent2); }
+.badge.purple { border-color: var(--accent); color: var(--accent); }
+
+section { max-width: 1200px; margin: 0 auto; padding: 3rem 2rem; }
+section + section { border-top: 1px solid var(--border); }
+h2 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.4rem; }
+h2 span { color: var(--accent2); }
+.section-desc { color: var(--muted); margin-bottom: 2rem; font-size: 0.92rem; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
+.card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0; }
+.card-grid { display: grid; gap: 1.5rem; }
+.card-grid.col2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.card-grid.col3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+
+.anno { font-size: 0.78rem; color: var(--muted); padding-left: 1rem; border-left: 2px solid var(--border); }
+
+/* stat row */
+.stat-row { display: flex; justify-content: space-between; align-items: center; padding: 0.55rem 0; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+.stat-row:last-child { border-bottom: none; }
+.stat-label { color: var(--muted); }
+.stat-val { font-weight: 600; }
+.yes { color: var(--green); }
+.no  { color: var(--accent3); }
+.neu { color: var(--muted); }
+
+/* comparison table */
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.cmp-table th { text-align: left; padding: 0.7rem 1rem; background: var(--card2); border: 1px solid var(--border); font-weight: 600; }
+.cmp-table td { padding: 0.65rem 1rem; border: 1px solid var(--border); vertical-align: top; }
+.cmp-table tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+.cmp-table td.yes { color: var(--green); }
+.cmp-table td.no  { color: var(--accent3); }
+.cmp-table td.note { color: var(--muted); font-size: 0.78rem; }
+
+/* code block */
+pre { background: #0a0c14; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; font-size: 0.8rem; line-height: 1.7; overflow-x: auto; margin-top: 0.8rem; }
+pre .fn  { color: var(--accent2); }
+pre .num { color: var(--accent4); }
+pre .cm  { color: #4a5568; font-style: italic; }
+pre .kw  { color: var(--accent); }
+
+/* timeline */
+.timeline { display: flex; align-items: flex-start; gap: 0; margin-top: 1.5rem; }
+.tl-item { flex: 1; position: relative; text-align: center; }
+.tl-item::after { content: ''; position: absolute; top: 7px; left: 50%; right: -50%; height: 2px; background: var(--border); z-index: 0; }
+.tl-item:last-child::after { display: none; }
+.tl-dot { width: 16px; height: 16px; border-radius: 50%; margin: 0 auto 0.6rem; position: relative; z-index: 1; }
+.tl-dot.old  { background: var(--muted); }
+.tl-dot.mid  { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.tl-dot.new  { background: var(--accent2); box-shadow: 0 0 10px var(--accent2); }
+.tl-version  { font-size: 0.82rem; font-weight: 700; }
+.tl-date     { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; }
+.tl-detail   { font-size: 0.7rem; color: var(--muted); margin-top: 0.1rem; }
+
+/* bar chart */
+.bar-wrap { margin: 1.2rem 0; }
+.bar-row { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.6rem; }
+.bar-label { width: 90px; font-size: 0.8rem; color: var(--muted); text-align: right; flex-shrink: 0; }
+.bar-track { flex: 1; background: var(--card2); border-radius: 4px; height: 24px; overflow: hidden; position: relative; }
+.bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 0.5rem; font-size: 0.75rem; font-weight: 700; white-space: nowrap; transition: width 0.8s ease; }
+.bar-m21 { background: linear-gradient(90deg, #6c63ff, #9d97ff); color: white; }
+.bar-m25 { background: linear-gradient(90deg, #00d4aa, #00f5c8); color: #0a2e27; }
+
+/* pill */
+.pill { display: inline-block; border-radius: 999px; padding: 0.2rem 0.7rem; font-size: 0.75rem; margin: 0.15rem; }
+.pill.p1 { background: rgba(108,99,255,0.15); color: var(--accent); }
+.pill.p2 { background: rgba(0,212,170,0.12); color: var(--accent2); }
+.pill.p3 { background: rgba(255,107,107,0.12); color: var(--accent3); }
+.pill.p4 { background: rgba(255,217,61,0.12); color: var(--accent4); }
+
+/* accuracy card */
+.acc-card { text-align: center; padding: 1.2rem; }
+.acc-num { font-size: 2.4rem; font-weight: 800; }
+.acc-label { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+.acc-sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.1rem; }
+
+footer { text-align: center; padding: 2rem; color: var(--muted); font-size: 0.8rem; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="#timeline">时间线</a>
+  <a href="#arch">架构差异</a>
+  <a href="#perf">性能调优</a>
+  <a href="#accuracy">准确率</a>
+  <a href="#deploy">部署配置</a>
+  <a href="#matrix">特性矩阵</a>
+</nav>
+
+<div class="hero">
+  <h1>MiniMax M2.1 vs M2.5</h1>
+  <p>基于 SGLang 源码、Triton 调优配置与 CI 测试数据的版本差异深度对比</p>
+  <div class="badge-row">
+    <span class="badge hot">Expert FFN ×3 提升</span>
+    <span class="badge hot">AMD AITER 首选</span>
+    <span class="badge purple">230B 总参 / 10B 激活</span>
+    <span class="badge">同一 minimax_m2.py 实现</span>
+    <span class="badge">256 专家结构不变</span>
+  </div>
+</div>
+
+<!-- ══════════════════ TIMELINE ══════════════════ -->
+<section id="timeline">
+  <h2>1. <span>版本发布</span>时间线</h2>
+  <p class="section-desc">从 SGLang commit 历史还原 M2 系列的演进节点</p>
+
+  <div class="card">
+    <div class="timeline">
+      <div class="tl-item">
+        <div class="tl-dot old"></div>
+        <div class="tl-version" style="color:var(--muted)">MiniMax-M2</div>
+        <div class="tl-date">2025-06</div>
+        <div class="tl-detail">SGLang 初始支持</div>
+        <div class="tl-detail">commit <code style="font-size:0.65rem">7ebc28f5</code></div>
+        <div class="tl-detail" style="margin-top:0.4rem">E=256, N=128</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot mid"></div>
+        <div class="tl-version" style="color:var(--accent)">MiniMax-M2.1</div>
+        <div class="tl-date">2025-12</div>
+        <div class="tl-detail">文档正式收录</div>
+        <div class="tl-detail">commit <code style="font-size:0.65rem">5c64a20d</code></div>
+        <div class="tl-detail" style="margin-top:0.4rem">改进训练，同架构</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot new"></div>
+        <div class="tl-version" style="color:var(--accent2)">MiniMax-M2.5</div>
+        <div class="tl-date">2026-02-27</div>
+        <div class="tl-detail">AMD Day 0 支持</div>
+        <div class="tl-detail">commit <code style="font-size:0.65rem">403195d5</code></div>
+        <div class="tl-detail" style="margin-top:0.4rem">E=256, N=384 ↑3×</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot new" style="background:var(--green);box-shadow:0 0 10px var(--green)"></div>
+        <div class="tl-version" style="color:var(--green)">M2.5 主测</div>
+        <div class="tl-date">2026-03-07</div>
+        <div class="tl-detail">替换 M2 nightly</div>
+        <div class="tl-detail">commit <code style="font-size:0.65rem">1aa6ab41</code></div>
+        <div class="tl-detail" style="margin-top:0.4rem">当前推荐版本</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ ARCH ══════════════════ -->
+<section id="arch">
+  <h2>2. <span>架构</span>差异</h2>
+  <p class="section-desc">两个版本在 SGLang 中使用同一份 <code>minimax_m2.py</code>，架构差异体现在模型权重配置上</p>
+
+  <!-- Bar chart: Expert FFN dimension -->
+  <div class="card" style="margin-bottom:1.5rem">
+    <h3>Expert FFN 中间维度对比（N）</h3>
+    <p class="anno" style="margin: 0.6rem 0 1.2rem">来源：<code>fused_moe_triton/configs/</code> 文件名中 E=256 对应的 N 值。N 代表每个专家 FFN 的中间维度大小。</p>
+    <div class="bar-wrap">
+      <div class="bar-row">
+        <div class="bar-label">M2 / M2.1</div>
+        <div class="bar-track">
+          <div class="bar-fill bar-m21" style="width:33.3%">N = 128</div>
+        </div>
+        <div style="font-size:0.8rem;color:var(--muted);width:80px">基准</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">M2.5</div>
+        <div class="bar-track">
+          <div class="bar-fill bar-m25" style="width:100%">N = 384</div>
+        </div>
+        <div style="font-size:0.8rem;color:var(--green);width:80px;font-weight:700">+3× 提升</div>
+      </div>
+    </div>
+    <div class="anno">Expert 中间维度从 128 增长到 384，每个专家的表示容量显著提升，有助于更复杂的知识编码与推理能力。</div>
+  </div>
+
+  <!-- Side-by-side card comparison -->
+  <div class="card-grid col2">
+    <div class="card">
+      <h3 style="color:var(--accent)">MiniMax-M2.1</h3>
+      <div style="margin-top:1rem">
+        <div class="stat-row"><span class="stat-label">总参数量</span><span class="stat-val">230B</span></div>
+        <div class="stat-row"><span class="stat-label">激活参数 / token</span><span class="stat-val">10B (4.3%)</span></div>
+        <div class="stat-row"><span class="stat-label">专家数量 (E)</span><span class="stat-val">256</span></div>
+        <div class="stat-row"><span class="stat-label">FFN 中间维度 (N)</span><span class="stat-val" style="color:var(--accent)">128</span></div>
+        <div class="stat-row"><span class="stat-label">注意力机制</span><span class="stat-val">GQA + QK RMSNorm</span></div>
+        <div class="stat-row"><span class="stat-label">RoPE 维度</span><span class="stat-val">64 (部分 RoPE)</span></div>
+        <div class="stat-row"><span class="stat-label">最大上下文</span><span class="stat-val">3M tokens (8 GPU)</span></div>
+      </div>
+    </div>
+    <div class="card" style="border-color:var(--accent2)">
+      <h3 style="color:var(--accent2)">MiniMax-M2.5 <span style="font-size:0.7rem;background:rgba(0,212,170,0.15);padding:0.1rem 0.5rem;border-radius:999px">当前推荐</span></h3>
+      <div style="margin-top:1rem">
+        <div class="stat-row"><span class="stat-label">总参数量</span><span class="stat-val">230B+</span></div>
+        <div class="stat-row"><span class="stat-label">激活参数 / token</span><span class="stat-val">10B+ (稀疏)</span></div>
+        <div class="stat-row"><span class="stat-label">专家数量 (E)</span><span class="stat-val">256</span></div>
+        <div class="stat-row"><span class="stat-label">FFN 中间维度 (N)</span><span class="stat-val yes">384 ↑3×</span></div>
+        <div class="stat-row"><span class="stat-label">注意力机制</span><span class="stat-val">GQA + QK RMSNorm</span></div>
+        <div class="stat-row"><span class="stat-label">RoPE 维度</span><span class="stat-val">64 (部分 RoPE)</span></div>
+        <div class="stat-row"><span class="stat-label">最大上下文</span><span class="stat-val">3M tokens (8 GPU)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:1.5rem">
+    <div class="card">
+      <h3>共同架构特性（M2 系列通用）</h3>
+      <div style="margin-top:0.8rem;display:flex;flex-wrap:wrap;gap:0.3rem">
+        <span class="pill p1">全层纯稀疏 MoE（无 Dense FFN）</span>
+        <span class="pill p2">QK RMSNorm（Triton + TP 感知）</span>
+        <span class="pill p1">LayerCommunicator 通信抽象</span>
+        <span class="pill p2">8步 TBO 批次重叠</span>
+        <span class="pill p3">DeepEP Expert Parallel</span>
+        <span class="pill p4">部分 RoPE (dim=64)</span>
+        <span class="pill p1">XML 流式函数调用</span>
+        <span class="pill p2">correction_bias 路由修正</span>
+        <span class="pill p3">Router 强制 float32</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ PERF ══════════════════ -->
+<section id="perf">
+  <h2>3. <span>性能调优</span>配置差异</h2>
+  <p class="section-desc">SGLang 为不同版本提供了不同的 Triton fused_moe 内核调优配置</p>
+
+  <div class="card-grid col2">
+    <div class="card">
+      <h3 style="color:var(--accent)">M2.1 调优配置</h3>
+      <div style="margin-top:1rem">
+        <div class="stat-row"><span class="stat-label">H100 配置</span><span class="stat-val">E=256, N=128</span></div>
+        <div class="stat-row"><span class="stat-label">H20 FP8 配置</span><span class="stat-val no">无</span></div>
+        <div class="stat-row"><span class="stat-label">AMD MI300X</span><span class="stat-val">E=256, N=256 (FP8)</span></div>
+        <div class="stat-row"><span class="stat-label">AMD MI325X</span><span class="stat-val">E=256, N=256 (FP8)</span></div>
+        <div class="stat-row"><span class="stat-label">dtype 支持</span><span class="stat-val">int8, fp8_w8a8</span></div>
+      </div>
+    </div>
+    <div class="card" style="border-color:var(--accent2)">
+      <h3 style="color:var(--accent2)">M2.5 调优配置</h3>
+      <div style="margin-top:1rem">
+        <div class="stat-row"><span class="stat-label">H100 配置</span><span class="stat-val">E=256, N=384</span></div>
+        <div class="stat-row"><span class="stat-label">H20 FP8 配置</span><span class="stat-val yes">✅ E=256, N=384</span></div>
+        <div class="stat-row"><span class="stat-label">AMD MI300X</span><span class="stat-val yes">E=256, N=384 (FP8) ↑</span></div>
+        <div class="stat-row"><span class="stat-label">AMD MI325X</span><span class="stat-val yes">E=256, N=384 (FP8) ↑</span></div>
+        <div class="stat-row"><span class="stat-label">dtype 支持</span><span class="stat-val">fp8_w8a8 (block_shape)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:1.5rem">
+    <h3>M2.5 H20 FP8 调优配置示例（新增）</h3>
+    <p class="anno" style="margin:0.5rem 0 0.8rem">文件：<code>E=256,N=384,device_name=NVIDIA_H20,dtype=fp8_w8a8,block_shape=[128, 128].json</code></p>
+    <pre><span class="cm">// batch_size=1</span>
+{
+  "BLOCK_SIZE_M": <span class="num">16</span>, "BLOCK_SIZE_N": <span class="num">64</span>, "BLOCK_SIZE_K": <span class="num">128</span>,
+  "GROUP_SIZE_M": <span class="num">1</span>, "num_warps": <span class="num">4</span>, "num_stages": <span class="num">4</span>
+}
+<span class="cm">// batch_size=128</span>
+{
+  "BLOCK_SIZE_M": <span class="num">16</span>, "BLOCK_SIZE_N": <span class="num">128</span>, "BLOCK_SIZE_K": <span class="num">128</span>,
+  "GROUP_SIZE_M": <span class="num">16</span>, "num_warps": <span class="num">4</span>, "num_stages": <span class="num">3</span>
+}</pre>
+  </div>
+</section>
+
+<!-- ══════════════════ ACCURACY ══════════════════ -->
+<section id="accuracy">
+  <h2>4. <span>准确率</span>基线对比</h2>
+  <p class="section-desc">基于 SGLang CI 测试中设置的 GSM8K 准确率门槛（few-shot completion）</p>
+
+  <div class="card-grid col3" style="margin-bottom:1.5rem">
+    <div class="card acc-card">
+      <div class="acc-num" style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent">80%</div>
+      <div class="acc-label">M2.1 GSM8K 基线</div>
+      <div class="acc-sub">NVIDIA CUDA · nightly CI</div>
+    </div>
+    <div class="card acc-card">
+      <div class="acc-num" style="background:linear-gradient(135deg,var(--accent2),var(--green));-webkit-background-clip:text;-webkit-text-fill-color:transparent">80%</div>
+      <div class="acc-label">M2.5 GSM8K 基线（CUDA）</div>
+      <div class="acc-sub">NVIDIA H200/B200 · TP=8+EP=8</div>
+    </div>
+    <div class="card acc-card" style="border-color:var(--green)">
+      <div class="acc-num" style="background:linear-gradient(135deg,var(--green),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent">93%</div>
+      <div class="acc-label">M2.5 GSM8K 基线（AMD）</div>
+      <div class="acc-sub">MI325X / MI300X · AITER 后端</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>准确率测试配置</h3>
+    <div style="overflow-x:auto;margin-top:1rem">
+      <table class="cmp-table">
+        <thead>
+          <tr><th>配置项</th><th style="color:var(--accent)">M2.1</th><th style="color:var(--accent2)">M2.5</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>评测数据集</td><td>GSM8K</td><td>GSM8K</td></tr>
+          <tr><td>Few-shot 数</td><td>5-shot</td><td>5-shot</td></tr>
+          <tr><td>评测题目数</td><td>1319（全量）</td><td>200</td></tr>
+          <tr><td>CUDA 准确率门槛</td><td>≥80%</td><td>≥80%</td></tr>
+          <tr><td>AMD 准确率门槛</td><td class="note">—（未设）</td><td class="yes">≥93%</td></tr>
+          <tr><td>测试 TP 配置</td><td>TP=8 + EP=8</td><td>TP=8 + EP=8</td></tr>
+          <tr><td>AMD 注意力后端</td><td class="note">标准</td><td class="yes">AITER</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ DEPLOY ══════════════════ -->
+<section id="deploy">
+  <h2>5. <span>部署配置</span>差异</h2>
+  <p class="section-desc">M2.5 在 AMD GPU 上引入了专属的 AITER 注意力后端，性能更优</p>
+
+  <div class="card-grid col2" style="margin-bottom:1.5rem">
+    <div class="card">
+      <h3 style="color:var(--accent);margin-bottom:0.8rem">M2.1 — NVIDIA 标准部署（4 GPU）</h3>
+      <pre><span class="fn">python</span> -m sglang.launch_server \
+  --model-path MiniMaxAI/MiniMax-M2.1 \
+  --tp-size <span class="num">4</span> \
+  --tool-call-parser minimax-m2 \
+  --reasoning-parser minimax-append-think \
+  --host 0.0.0.0 \
+  --trust-remote-code \
+  --port <span class="num">8000</span> \
+  --mem-fraction-static <span class="num">0.85</span></pre>
+    </div>
+    <div class="card" style="border-color:var(--accent2)">
+      <h3 style="color:var(--accent2);margin-bottom:0.8rem">M2.5 — AMD GPU 推荐部署（8 GPU）</h3>
+      <pre>SGLANG_USE_AITER=<span class="num">1</span> <span class="fn">python</span> -m sglang.launch_server \
+  --model-path MiniMaxAI/MiniMax-M2.5 \
+  --tp-size <span class="num">8</span> \
+  --ep-size <span class="num">8</span> \
+  --attention-backend aiter <span class="cm"># M2.5 新增</span>
+  --tool-call-parser minimax-m2 \
+  --reasoning-parser minimax-append-think \
+  --host 0.0.0.0 \
+  --trust-remote-code \
+  --port <span class="num">8000</span> \
+  --mem-fraction-static <span class="num">0.85</span></pre>
+    </div>
+  </div>
+
+  <div class="card-grid col2">
+    <div class="card">
+      <h3 style="color:var(--accent);margin-bottom:0.8rem">M2.1 — NVIDIA 标准部署（8 GPU）</h3>
+      <pre><span class="fn">python</span> -m sglang.launch_server \
+  --model-path MiniMaxAI/MiniMax-M2.1 \
+  --tp-size <span class="num">8</span> \
+  --ep-size <span class="num">8</span> \
+  --tool-call-parser minimax-m2 \
+  --reasoning-parser minimax-append-think \
+  --host 0.0.0.0 \
+  --trust-remote-code \
+  --port <span class="num">8000</span> \
+  --mem-fraction-static <span class="num">0.85</span></pre>
+    </div>
+    <div class="card" style="border-color:var(--accent2)">
+      <h3 style="color:var(--accent2);margin-bottom:0.8rem">M2.5 — NVIDIA 标准部署（8 GPU）</h3>
+      <pre><span class="fn">python</span> -m sglang.launch_server \
+  --model-path MiniMaxAI/MiniMax-M2.5 \
+  --tp-size <span class="num">8</span> \
+  --ep-size <span class="num">8</span> \
+  --tool-call-parser minimax-m2 \
+  --reasoning-parser minimax-append-think \
+  --host 0.0.0.0 \
+  --trust-remote-code \
+  --port <span class="num">8000</span> \
+  --mem-fraction-static <span class="num">0.85</span>
+<span class="cm"># 与 M2.1 完全相同，仅换模型路径</span></pre>
+    </div>
+  </div>
+
+  <!-- Key diff highlight -->
+  <div class="card" style="margin-top:1.5rem;border-color:var(--accent4)">
+    <h3 style="color:var(--accent4)">部署关键差异总结</h3>
+    <div style="margin-top:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem">
+      <div style="background:var(--card2);border-radius:8px;padding:1rem;border:1px solid var(--border)">
+        <div style="color:var(--accent2);font-weight:700;margin-bottom:0.4rem;font-size:0.9rem">AMD AITER 后端</div>
+        <div style="font-size:0.82rem;color:var(--muted)">M2.5 新增 <code>--attention-backend aiter</code> 与 <code>SGLANG_USE_AITER=1</code>，在 MI 系列 GPU 上获得更高吞吐</div>
+      </div>
+      <div style="background:var(--card2);border-radius:8px;padding:1rem;border:1px solid var(--border)">
+        <div style="color:var(--accent2);font-weight:700;margin-bottom:0.4rem;font-size:0.9rem">NVIDIA 无变化</div>
+        <div style="font-size:0.82rem;color:var(--muted)">NVIDIA GPU 上两个版本部署命令完全相同，只需切换 <code>--model-path</code></div>
+      </div>
+      <div style="background:var(--card2);border-radius:8px;padding:1rem;border:1px solid var(--border)">
+        <div style="color:var(--accent4);font-weight:700;margin-bottom:0.4rem;font-size:0.9rem">多线程加载</div>
+        <div style="font-size:0.82rem;color:var(--muted)">AMD CI 测试中 M2.5 使用 <code>enable_multithread_load: true</code>，加速模型加载</div>
+      </div>
+      <div style="background:var(--card2);border-radius:8px;padding:1rem;border:1px solid var(--border)">
+        <div style="color:var(--orange);font-weight:700;margin-bottom:0.4rem;font-size:0.9rem">Watchdog 超时</div>
+        <div style="font-size:0.82rem;color:var(--muted)">M2.5 AMD 测试设置 <code>--watchdog-timeout 1200</code>，适配更大模型的加载时间</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ MATRIX ══════════════════ -->
+<section id="matrix">
+  <h2>6. <span>特性</span>完整对比矩阵</h2>
+  <p class="section-desc">M2.1 与 M2.5 在 SGLang 实现层面的全面特性对比</p>
+
+  <div class="card" style="overflow-x:auto">
+    <table class="cmp-table">
+      <thead>
+        <tr>
+          <th>维度</th>
+          <th>特性</th>
+          <th style="color:var(--accent)">M2 / M2.1</th>
+          <th style="color:var(--accent2)">M2.5 ★</th>
+          <th>备注</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td rowspan="4" style="color:var(--muted);font-size:0.8rem;vertical-align:middle">架构</td>
+          <td>Expert FFN 中间维度 (N)</td>
+          <td>128</td>
+          <td class="yes">384 (+3×)</td>
+          <td class="note">来源：Triton 调优配置文件名</td>
+        </tr>
+        <tr>
+          <td>专家数量 (E)</td>
+          <td>256</td>
+          <td>256</td>
+          <td class="note">相同路由结构</td>
+        </tr>
+        <tr>
+          <td>激活参数 / token</td>
+          <td>~10B</td>
+          <td>~10B</td>
+          <td class="note">稀疏 MoE 激活</td>
+        </tr>
+        <tr>
+          <td>SGLang 模型文件</td>
+          <td>minimax_m2.py</td>
+          <td>minimax_m2.py</td>
+          <td class="note">共用同一实现</td>
+        </tr>
+        <tr>
+          <td rowspan="4" style="color:var(--muted);font-size:0.8rem;vertical-align:middle">硬件支持</td>
+          <td>NVIDIA CUDA</td>
+          <td class="yes">✅</td>
+          <td class="yes">✅</td>
+          <td class="note">H100 / H200 / B200 / A100</td>
+        </tr>
+        <tr>
+          <td>AMD AITER 后端</td>
+          <td class="no">❌ 不推荐</td>
+          <td class="yes">✅ 首选</td>
+          <td class="note">MI300X / MI325X / MI355X</td>
+        </tr>
+        <tr>
+          <td>NVIDIA H20 FP8 调优</td>
+          <td class="no">❌</td>
+          <td class="yes">✅ 新增</td>
+          <td class="note">block_shape=[128,128]</td>
+        </tr>
+        <tr>
+          <td>Ascend NPU</td>
+          <td class="no">❌</td>
+          <td class="no">❌</td>
+          <td class="note">M2 系列暂不支持</td>
+        </tr>
+        <tr>
+          <td rowspan="3" style="color:var(--muted);font-size:0.8rem;vertical-align:middle">准确率</td>
+          <td>GSM8K CUDA 门槛</td>
+          <td>≥80%</td>
+          <td>≥80%</td>
+          <td class="note">5-shot completion</td>
+        </tr>
+        <tr>
+          <td>GSM8K AMD 门槛</td>
+          <td class="note">—</td>
+          <td class="yes">≥93%</td>
+          <td class="note">MI325X 高准确率目标</td>
+        </tr>
+        <tr>
+          <td>nightly 评测数据集</td>
+          <td>GSM8K / mgsm_en</td>
+          <td class="yes">GSM8K</td>
+          <td class="note">统一为 GSM8K</td>
+        </tr>
+        <tr>
+          <td rowspan="3" style="color:var(--muted);font-size:0.8rem;vertical-align:middle">CI / 测试</td>
+          <td>nightly 主测</td>
+          <td class="no">已替换（2026-03）</td>
+          <td class="yes">✅ 当前主测</td>
+          <td class="note">nightly-8-gpu-common</td>
+        </tr>
+        <tr>
+          <td>AMD nightly</td>
+          <td class="no">❌</td>
+          <td class="yes">✅ MI300X + MI355X</td>
+          <td class="note">ROCm 7.2</td>
+        </tr>
+        <tr>
+          <td>Pipeline Parallel</td>
+          <td class="yes">✅</td>
+          <td class="yes">✅</td>
+          <td class="note">均支持 PP 部署</td>
+        </tr>
+        <tr>
+          <td rowspan="3" style="color:var(--muted);font-size:0.8rem;vertical-align:middle">功能</td>
+          <td>函数调用解析器</td>
+          <td>minimax-m2</td>
+          <td>minimax-m2</td>
+          <td class="note">XML 流式格式，相同</td>
+        </tr>
+        <tr>
+          <td>推理解析器</td>
+          <td>minimax-append-think</td>
+          <td>minimax-append-think</td>
+          <td class="note">相同</td>
+        </tr>
+        <tr>
+          <td>HuggingFace 路径</td>
+          <td>MiniMaxAI/MiniMax-M2.1</td>
+          <td>MiniMaxAI/MiniMax-M2.5</td>
+          <td class="note">仅需更换路径</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Summary callout -->
+  <div class="card" style="margin-top:1.5rem;background:linear-gradient(135deg,rgba(0,212,170,0.06),rgba(108,99,255,0.06));border-color:var(--accent2)">
+    <h3>升级建议</h3>
+    <div style="margin-top:0.8rem;font-size:0.9rem;line-height:1.8">
+      <p style="margin-bottom:0.6rem">
+        <span style="color:var(--accent2);font-weight:700">推荐使用 M2.5</span>：SGLang 官方已将 nightly 测试从 M2 替换为 M2.5，表明 M2.5 是当前生产推荐版本。
+      </p>
+      <p style="margin-bottom:0.6rem">
+        <span style="color:var(--accent4);font-weight:700">AMD GPU 用户</span>：M2.5 + AITER 后端组合可获得最高性能，AMD MI325X 上 GSM8K 准确率门槛高达 93%。
+      </p>
+      <p>
+        <span style="color:var(--muted);font-weight:700">迁移成本极低</span>：两个版本使用同一套 SGLang 代码（minimax_m2.py），NVIDIA 上仅需修改 <code>--model-path</code> 即可完成升级。
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  基于 SGLang 源码分析生成 · commits: <code>5c64a20d</code> / <code>403195d5</code> / <code>1aa6ab41</code> · 2026-03
+</footer>
+
+</body>
+</html>

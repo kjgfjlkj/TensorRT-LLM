@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang 投机采样 Tree Decoding 原理详解</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    line-height: 1.6;
+  }
+  .hero {
+    background: linear-gradient(135deg, #1a1f2e 0%, #0f3460 50%, #16213e 100%);
+    padding: 60px 40px;
+    text-align: center;
+    border-bottom: 1px solid #2d3748;
+  }
+  .hero h1 {
+    font-size: 2.4em;
+    font-weight: 700;
+    background: linear-gradient(90deg, #63b3ed, #90cdf4, #68d391);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 12px;
+  }
+  .hero p {
+    color: #a0aec0;
+    font-size: 1.1em;
+    max-width: 700px;
+    margin: 0 auto;
+  }
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 24px;
+  }
+  .section {
+    margin-bottom: 60px;
+  }
+  .section-title {
+    font-size: 1.6em;
+    font-weight: 700;
+    color: #90cdf4;
+    margin-bottom: 24px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #2d3748;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-title .num {
+    background: #2b6cb0;
+    color: white;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9em;
+    flex-shrink: 0;
+  }
+  .card {
+    background: #1a202c;
+    border: 1px solid #2d3748;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-title {
+    font-size: 1.1em;
+    font-weight: 600;
+    color: #68d391;
+    margin-bottom: 14px;
+  }
+  code {
+    font-family: 'Consolas', 'Fira Code', monospace;
+    font-size: 0.88em;
+  }
+  pre {
+    background: #171923;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    padding: 18px;
+    overflow-x: auto;
+    font-size: 0.85em;
+    line-height: 1.7;
+    color: #e2e8f0;
+    margin: 12px 0;
+  }
+  .kw { color: #fc8181; }
+  .fn { color: #63b3ed; }
+  .cm { color: #718096; font-style: italic; }
+  .str { color: #68d391; }
+  .num2 { color: #f6ad55; }
+  .var { color: #e2e8f0; }
+  .type { color: #b794f4; }
+
+  /* SVG diagrams */
+  svg text { font-family: 'Segoe UI', sans-serif; }
+
+  /* Overview flow */
+  .flow-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .flow-box {
+    background: #1a202c;
+    border: 1px solid #4a5568;
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+    position: relative;
+  }
+  .flow-box.highlight {
+    border-color: #63b3ed;
+    background: #1e3a5f;
+  }
+  .flow-box.green {
+    border-color: #68d391;
+    background: #1a3a2a;
+  }
+  .flow-box.orange {
+    border-color: #f6ad55;
+    background: #3a2a1a;
+  }
+  .flow-box h4 {
+    font-size: 0.95em;
+    color: #90cdf4;
+    margin-bottom: 6px;
+  }
+  .flow-box p {
+    font-size: 0.82em;
+    color: #a0aec0;
+  }
+  .flow-arrow {
+    text-align: center;
+    font-size: 1.5em;
+    color: #4a5568;
+    margin: 4px 0;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.78em;
+    font-weight: 600;
+    margin: 2px;
+  }
+  .badge-blue { background: #2b6cb0; color: #bee3f8; }
+  .badge-green { background: #276749; color: #c6f6d5; }
+  .badge-orange { background: #c05621; color: #feebc8; }
+  .badge-purple { background: #553c9a; color: #e9d8fd; }
+  .badge-red { background: #9b2c2c; color: #fed7d7; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 0.88em;
+  }
+  th {
+    background: #2d3748;
+    color: #90cdf4;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+  }
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid #2d3748;
+    color: #cbd5e0;
+  }
+  tr:hover td { background: #1a202c; }
+
+  .highlight-box {
+    background: linear-gradient(135deg, #1e3a5f, #1a3a2a);
+    border: 1px solid #4a9eca;
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 16px 0;
+  }
+  .highlight-box.warn {
+    background: linear-gradient(135deg, #3a2a1a, #2a1a1a);
+    border-color: #f6ad55;
+  }
+  .highlight-box p {
+    color: #a0c4de;
+    font-size: 0.92em;
+  }
+  .highlight-box.warn p { color: #f6ad55; }
+  .step-label {
+    background: #2b6cb0;
+    color: white;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 0.8em;
+    margin-right: 8px;
+  }
+  .filepath {
+    background: #2d3748;
+    color: #f6ad55;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.82em;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>SGLang 投机采样 Tree Decoding 原理详解</h1>
+  <p>深入分析 EAGLE 算法中 topk &gt; 1 时的树结构 Token 生成与 Tree Attention 验证机制</p>
+</div>
+
+<div class="container">
+
+<!-- SECTION 1: Overview -->
+<div class="section">
+  <div class="section-title"><span class="num">1</span> 整体架构与工作流程</div>
+
+  <div class="card">
+    <div class="card-title">投机采样的核心思想</div>
+    <p style="color:#a0aec0; font-size:0.92em; margin-bottom:16px;">
+      投机采样用一个轻量的 Draft Model（草稿模型）提前生成多个候选 token，再用 Target Model（目标模型）一次性并行验证。
+      当 topk &gt; 1 时，Draft Model 在每一步会保留 k 个候选，形成树状结构（而非单链），显著提升接受率。
+    </p>
+
+    <svg width="100%" viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#63b3ed"/>
+        </marker>
+        <marker id="arrg" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#68d391"/>
+        </marker>
+      </defs>
+      <!-- Boxes -->
+      <rect x="10" y="60" width="160" height="80" rx="8" fill="#1e3a5f" stroke="#63b3ed" stroke-width="1.5"/>
+      <text x="90" y="95" text-anchor="middle" fill="#63b3ed" font-size="13" font-weight="bold">Draft Model</text>
+      <text x="90" y="115" text-anchor="middle" fill="#a0aec0" font-size="11">生成树状候选 tokens</text>
+      <text x="90" y="130" text-anchor="middle" fill="#f6ad55" font-size="10">topk * depth 个节点</text>
+
+      <rect x="230" y="60" width="180" height="80" rx="8" fill="#1a2e4a" stroke="#4a5568" stroke-width="1.5"/>
+      <text x="320" y="95" text-anchor="middle" fill="#90cdf4" font-size="13" font-weight="bold">build_tree_kernel</text>
+      <text x="320" y="112" text-anchor="middle" fill="#a0aec0" font-size="11">构建 tree_mask</text>
+      <text x="320" y="129" text-anchor="middle" fill="#a0aec0" font-size="11">& positions</text>
+
+      <rect x="470" y="60" width="180" height="80" rx="8" fill="#1a3a2a" stroke="#68d391" stroke-width="1.5"/>
+      <text x="560" y="95" text-anchor="middle" fill="#68d391" font-size="13" font-weight="bold">Target Model</text>
+      <text x="560" y="112" text-anchor="middle" fill="#a0aec0" font-size="11">带 Tree Mask 的</text>
+      <text x="560" y="129" text-anchor="middle" fill="#a0aec0" font-size="11">并行 Attention</text>
+
+      <rect x="710" y="60" width="180" height="80" rx="8" fill="#3a2a1a" stroke="#f6ad55" stroke-width="1.5"/>
+      <text x="800" y="95" text-anchor="middle" fill="#f6ad55" font-size="13" font-weight="bold">Tree Verification</text>
+      <text x="800" y="112" text-anchor="middle" fill="#a0aec0" font-size="11">DFS 验证树路径</text>
+      <text x="800" y="129" text-anchor="middle" fill="#a0aec0" font-size="11">选出最长接受链</text>
+
+      <!-- Arrows -->
+      <line x1="170" y1="100" x2="228" y2="100" stroke="#63b3ed" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="410" y1="100" x2="468" y2="100" stroke="#63b3ed" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="650" y1="100" x2="708" y2="100" stroke="#68d391" stroke-width="2" marker-end="url(#arrg)"/>
+      <!-- Labels -->
+      <text x="199" y="92" text-anchor="middle" fill="#718096" font-size="10">tree tokens</text>
+      <text x="439" y="92" text-anchor="middle" fill="#718096" font-size="10">mask+pos</text>
+      <text x="679" y="92" text-anchor="middle" fill="#718096" font-size="10">logits</text>
+    </svg>
+  </div>
+
+  <!-- Key files table -->
+  <div class="card">
+    <div class="card-title">核心文件一览</div>
+    <table>
+      <tr><th>文件路径</th><th>主要职责</th><th>关键函数/类</th></tr>
+      <tr>
+        <td><span class="filepath">srt/speculative/eagle_utils.py</span></td>
+        <td>树构建工具</td>
+        <td><code>build_tree_kernel_efficient()</code>, <code>TreeMaskMode</code></td>
+      </tr>
+      <tr>
+        <td><span class="filepath">srt/speculative/eagle_info.py</span></td>
+        <td>验证输入/输出数据结构</td>
+        <td><code>EagleVerifyInput.verify()</code>, <code>EagleDraftInput</code></td>
+      </tr>
+      <tr>
+        <td><span class="filepath">srt/speculative/eagle_worker_v2.py</span></td>
+        <td>Draft 工作者主控</td>
+        <td><code>draft_forward()</code>, <code>organize_draft_results()</code></td>
+      </tr>
+      <tr>
+        <td><span class="filepath">srt/speculative/spec_utils.py</span></td>
+        <td>Token 选取工具</td>
+        <td><code>select_top_k_tokens()</code>, Triton kernels</td>
+      </tr>
+      <tr>
+        <td><span class="filepath">sgl-kernel/csrc/speculative/eagle_utils.cu</span></td>
+        <td>CUDA 核心实现</td>
+        <td><code>build_tree_efficient()</code>, <code>VerifyTreeGreedy()</code></td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<!-- SECTION 2: Draft Phase - Tree Generation -->
+<div class="section">
+  <div class="section-title"><span class="num">2</span> Draft 阶段：树结构 Token 生成</div>
+
+  <div class="card">
+    <div class="card-title">select_top_k_tokens() — 每步如何展开树节点</div>
+    <div class="grid-2">
+      <div>
+        <p style="color:#a0aec0;font-size:0.9em;margin-bottom:12px;">
+          Draft Model 每步运行一次，产生 <code>topk</code> 个候选分支。
+          第 0 步从 <code>verified_id</code>（上次验证接受的最后 token）出发；
+          第 i 步对上一步的每个候选并行展开，再从所有组合中保留得分最高的 topk 个。
+        </p>
+        <pre><code><span class="cm"># Step 0: 从 root 展开 topk 个候选</span>
+<span class="cm"># topk_p[b, topk], topk_index[b, topk]</span>
+tree_info_0 = (
+  topk_p.unsqueeze(<span class="num2">1</span>),  <span class="cm"># [b, 1, topk]</span>
+  topk_index,           <span class="cm"># [b, topk]</span>
+  torch.arange(-<span class="num2">1</span>, topk) <span class="cm"># parents: 都是 root(-1)</span>
+)
+
+<span class="cm"># Step i>0: 从上一步 topk 个节点各展开 topk</span>
+<span class="cm"># expand_scores[b, topk²] = 父score × 子prob</span>
+expand_scores = scores[:, :, <span class="num2">1</span>] * topk_p  <span class="cm"># [b,k,k]</span>
+topk_cs_p, topk_cs_index = fast_topk(
+    expand_scores.reshape(bs, -<span class="num2">1</span>), topk)  <span class="cm"># [b,topk]</span>
+
+<span class="cm"># 记录每个被选中节点的父节点位置</span>
+parents = topk_cs_index + offset  <span class="cm"># 指向上一步的哪个节点</span></code></pre>
+      </div>
+      <div>
+        <!-- Tree diagram: topk=2, depth=3 -->
+        <svg width="100%" viewBox="0 0 340 280" xmlns="http://www.w3.org/2000/svg">
+          <text x="170" y="20" text-anchor="middle" fill="#90cdf4" font-size="13" font-weight="bold">topk=2, depth=3 时的候选树</text>
+
+          <!-- Depth labels -->
+          <text x="10" y="58" fill="#718096" font-size="10">Depth 0</text>
+          <text x="10" y="118" fill="#718096" font-size="10">Depth 1</text>
+          <text x="10" y="178" fill="#718096" font-size="10">Depth 2</text>
+          <text x="10" y="238" fill="#718096" font-size="10">Depth 3</text>
+
+          <!-- root -->
+          <circle cx="170" cy="50" r="18" fill="#2b6cb0" stroke="#63b3ed" stroke-width="2"/>
+          <text x="170" y="55" text-anchor="middle" fill="white" font-size="11">root</text>
+
+          <!-- depth 1: 2 nodes -->
+          <circle cx="100" cy="110" r="16" fill="#276749" stroke="#68d391" stroke-width="1.5"/>
+          <text x="100" y="115" text-anchor="middle" fill="white" font-size="10">t₀</text>
+          <circle cx="240" cy="110" r="16" fill="#276749" stroke="#68d391" stroke-width="1.5"/>
+          <text x="240" y="115" text-anchor="middle" fill="white" font-size="10">t₁</text>
+
+          <!-- depth 2: 4 nodes (keep top 2 from 4) -->
+          <circle cx="60" cy="170" r="14" fill="#553c9a" stroke="#b794f4" stroke-width="1.5"/>
+          <text x="60" y="175" text-anchor="middle" fill="white" font-size="9">t₀₀</text>
+          <circle cx="140" cy="170" r="14" fill="#4a5568" stroke="#718096" stroke-width="1.5" opacity="0.4"/>
+          <text x="140" y="175" text-anchor="middle" fill="#718096" font-size="9">t₀₁</text>
+          <circle cx="220" cy="170" r="14" fill="#553c9a" stroke="#b794f4" stroke-width="1.5"/>
+          <text x="220" y="175" text-anchor="middle" fill="white" font-size="9">t₁₀</text>
+          <circle cx="300" cy="170" r="14" fill="#4a5568" stroke="#718096" stroke-width="1.5" opacity="0.4"/>
+          <text x="300" y="175" text-anchor="middle" fill="#718096" font-size="9">t₁₁</text>
+
+          <!-- depth 3: keep top 2 from 4 -->
+          <circle cx="60" cy="230" r="12" fill="#9b2c2c" stroke="#fc8181" stroke-width="1.5"/>
+          <text x="60" y="235" text-anchor="middle" fill="white" font-size="9">t₀₀₀</text>
+          <circle cx="220" cy="230" r="12" fill="#9b2c2c" stroke="#fc8181" stroke-width="1.5"/>
+          <text x="220" y="235" text-anchor="middle" fill="white" font-size="9">t₁₀₀</text>
+
+          <!-- Edges depth0->1 -->
+          <line x1="155" y1="64" x2="113" y2="96" stroke="#68d391" stroke-width="1.5"/>
+          <line x1="185" y1="64" x2="227" y2="96" stroke="#68d391" stroke-width="1.5"/>
+          <!-- Edges depth1->2 kept -->
+          <line x1="89" y1="123" x2="67" y2="157" stroke="#b794f4" stroke-width="1.5"/>
+          <line x1="111" y1="123" x2="133" y2="157" stroke="#718096" stroke-width="1" opacity="0.3" stroke-dasharray="4"/>
+          <line x1="229" y1="123" x2="222" y2="157" stroke="#b794f4" stroke-width="1.5"/>
+          <line x1="251" y1="123" x2="293" y2="157" stroke="#718096" stroke-width="1" opacity="0.3" stroke-dasharray="4"/>
+          <!-- Edges depth2->3 -->
+          <line x1="60" y1="184" x2="60" y2="218" stroke="#fc8181" stroke-width="1.5"/>
+          <line x1="220" y1="184" x2="220" y2="218" stroke="#fc8181" stroke-width="1.5"/>
+
+          <!-- Legend -->
+          <circle cx="80" cy="260" r="6" fill="#276749" stroke="#68d391" stroke-width="1"/>
+          <text x="92" y="264" fill="#a0aec0" font-size="10">选中</text>
+          <circle cx="140" cy="260" r="6" fill="#4a5568" opacity="0.5"/>
+          <text x="152" y="264" fill="#a0aec0" font-size="10">剪枝</text>
+          <text x="180" y="264" fill="#718096" font-size="10">topk=2: 每层选出得分最高的2个</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">parent_list 与 top_scores_index 数据结构</div>
+    <div class="grid-2">
+      <div>
+        <p style="color:#a0aec0;font-size:0.88em;margin-bottom:10px;">
+          <code>parent_list[bs, topk*(depth-1)+1]</code> — 记录所有候选节点对应的原始展开位置（用于向上追溯父链）。
+          <br><br>
+          <code>top_scores_index[bs, draft_token_num-1]</code> — 每个最终被选中节点在展开矩阵中的绝对索引。
+        </p>
+        <pre><code><span class="cm"># topk=2, depth=3 示例</span>
+<span class="cm"># parent_list: [bs, topk*(depth-1)+1] = [bs, 5]</span>
+parent_list = [
+  <span class="cm">#  slot:  0      1      2      3      4</span>
+  [ <span class="num2">-1</span>,   <span class="num2">0</span>,     <span class="num2">2</span>,     <span class="num2">0</span>,     <span class="num2">2</span>   ]
+  <span class="cm"># root  t₀     t₁     t₀₀    t₁₀</span>
+  <span class="cm"># (slot 1,2 = depth1; slot 3,4 = depth2)</span>
+]
+
+<span class="cm"># top_scores_index: [bs, draft_token_num-1]</span>
+<span class="cm"># 共 5-1=4 个 draft token (不含 root)</span>
+top_scores_index = [[<span class="num2">0</span>, <span class="num2">2</span>, <span class="num2">0</span>, <span class="num2">4</span>]]
+<span class="cm"># 意义: 第1个选中token是depth1的第0个候选</span>
+<span class="cm">#       第3个选中token是depth2的第4个候选</span>
+<span class="cm">#       parent = top_scores_index[i] // topk</span></code></pre>
+      </div>
+      <div>
+        <svg width="100%" viewBox="0 0 320 240" xmlns="http://www.w3.org/2000/svg">
+          <text x="160" y="18" text-anchor="middle" fill="#90cdf4" font-size="12" font-weight="bold">parent_list 索引追溯示例</text>
+
+          <!-- 节点 + 槽位编号 -->
+          <rect x="135" y="28" width="50" height="28" rx="5" fill="#2b6cb0" stroke="#63b3ed"/>
+          <text x="160" y="47" text-anchor="middle" fill="white" font-size="11">slot 0 (root)</text>
+
+          <rect x="60" y="88" width="50" height="26" rx="5" fill="#276749" stroke="#68d391"/>
+          <text x="85" y="105" text-anchor="middle" fill="white" font-size="10">slot 1 (t₀)</text>
+          <rect x="210" y="88" width="50" height="26" rx="5" fill="#276749" stroke="#68d391"/>
+          <text x="235" y="105" text-anchor="middle" fill="white" font-size="10">slot 2 (t₁)</text>
+
+          <rect x="30" y="148" width="58" height="26" rx="5" fill="#553c9a" stroke="#b794f4"/>
+          <text x="59" y="165" text-anchor="middle" fill="white" font-size="10">slot 3 (t₀₀)</text>
+          <rect x="230" y="148" width="58" height="26" rx="5" fill="#553c9a" stroke="#b794f4"/>
+          <text x="259" y="165" text-anchor="middle" fill="white" font-size="10">slot 4 (t₁₀)</text>
+
+          <!-- edges -->
+          <line x1="155" y1="56" x2="100" y2="88" stroke="#68d391" stroke-width="1.5"/>
+          <line x1="165" y1="56" x2="220" y2="88" stroke="#68d391" stroke-width="1.5"/>
+          <line x1="80" y1="114" x2="62" y2="148" stroke="#b794f4" stroke-width="1.5"/>
+          <line x1="240" y1="114" x2="254" y2="148" stroke="#b794f4" stroke-width="1.5"/>
+
+          <!-- parent pointers -->
+          <text x="30" y="205" fill="#a0aec0" font-size="10">parent追溯:</text>
+          <text x="30" y="220" fill="#f6ad55" font-size="10">t₀₀ → slot3: parent=top_scores_index[2]//2=0 → slot0=root</text>
+          <text x="30" y="235" fill="#f6ad55" font-size="10">t₁₀ → slot4: parent=top_scores_index[3]//2=2 → slot2=t₁</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 3: Build Tree Kernel -->
+<div class="section">
+  <div class="section-title"><span class="num">3</span> build_tree_kernel_efficient — 构建 Tree Mask 与导航结构</div>
+
+  <div class="highlight-box">
+    <p>
+      <strong style="color:#90cdf4">核心职责：</strong>
+      给定 parent_list 和 top_scores_index，CUDA kernel 在 GPU 上为每个 batch 中的每个 draft token（一个 thread）
+      计算其在注意力矩阵中的可见性（tree_mask）、序列位置（positions），以及用于树遍历的导航数组。
+    </p>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">TreeMaskMode 三种模式</div>
+      <table>
+        <tr><th>模式</th><th>Mask Shape</th><th>含义</th></tr>
+        <tr>
+          <td><span class="badge badge-blue">FULL_MASK</span></td>
+          <td><code>[seq_sum*draft + bs*draft²]</code></td>
+          <td>前缀 tokens + 树内部均包含，最完整</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">QLEN_ONLY</span></td>
+          <td><code>[bs * draft²]</code></td>
+          <td>仅树内部注意力，前缀由 PagedAttention 独立处理</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-purple">QLEN_ONLY_BITPACK</span></td>
+          <td><code>[bs * draft * bytes]</code></td>
+          <td>uint8/16/32 压缩，内存最省</td>
+        </tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title">输出的四个关键数组</div>
+      <table>
+        <tr><th>数组</th><th>Shape</th><th>用途</th></tr>
+        <tr><td><code>tree_mask</code></td><td>见上表</td><td>Attention 可见性矩阵</td></tr>
+        <tr><td><code>positions</code></td><td><code>[bs*draft]</code></td><td>RoPE 编码用的绝对位置</td></tr>
+        <tr><td><code>retrive_index</code></td><td><code>[bs, draft]</code></td><td>draft_token 到 logits 的映射</td></tr>
+        <tr><td><code>retrive_next_token</code></td><td><code>[bs, draft]</code></td><td>指向第一个子节点（DFS 用）</td></tr>
+        <tr><td><code>retrive_next_sibling</code></td><td><code>[bs, draft]</code></td><td>指向下一个兄弟节点（DFS 用）</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Tree mask diagram -->
+  <div class="card">
+    <div class="card-title">QLEN_ONLY 模式下的 Tree Mask 可视化（topk=2, depth=3）</div>
+    <p style="color:#a0aec0;font-size:0.88em;margin-bottom:16px;">
+      树内部的注意力掩码是一个 <code>[draft_tokens × draft_tokens]</code> 的矩阵。
+      每个 token 只能看到自己在树路径上的祖先 token，无法看到兄弟或无关分支。
+    </p>
+    <div class="grid-2">
+      <div>
+        <svg width="100%" viewBox="0 0 360 300" xmlns="http://www.w3.org/2000/svg">
+          <!-- Matrix title -->
+          <text x="180" y="20" text-anchor="middle" fill="#90cdf4" font-size="12" font-weight="bold">Tree Attention Mask (5×5)</text>
+          <text x="180" y="35" text-anchor="middle" fill="#718096" font-size="10">行=Query Token, 列=Key Token</text>
+
+          <!-- Column headers -->
+          <text x="100" y="58" text-anchor="middle" fill="#68d391" font-size="11">root</text>
+          <text x="150" y="58" text-anchor="middle" fill="#68d391" font-size="11">t₀</text>
+          <text x="200" y="58" text-anchor="middle" fill="#68d391" font-size="11">t₁</text>
+          <text x="250" y="58" text-anchor="middle" fill="#68d391" font-size="11">t₀₀</text>
+          <text x="300" y="58" text-anchor="middle" fill="#68d391" font-size="11">t₁₀</text>
+
+          <!-- Row headers -->
+          <text x="58" y="90" text-anchor="end" fill="#63b3ed" font-size="11">root</text>
+          <text x="58" y="130" text-anchor="end" fill="#63b3ed" font-size="11">t₀</text>
+          <text x="58" y="170" text-anchor="end" fill="#63b3ed" font-size="11">t₁</text>
+          <text x="58" y="210" text-anchor="end" fill="#63b3ed" font-size="11">t₀₀</text>
+          <text x="58" y="250" text-anchor="end" fill="#63b3ed" font-size="11">t₁₀</text>
+
+          <!-- Cells: 5x5, cell size 40, start at (65,65) -->
+          <!-- root row: only self -->
+          <rect x="66" y="66" width="38" height="38" fill="#276749" rx="3"/>
+          <text x="85" y="90" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="116" y="66" width="38" height="38" fill="#2d3748" rx="3"/><text x="135" y="90" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="166" y="66" width="38" height="38" fill="#2d3748" rx="3"/><text x="185" y="90" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="216" y="66" width="38" height="38" fill="#2d3748" rx="3"/><text x="235" y="90" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="266" y="66" width="38" height="38" fill="#2d3748" rx="3"/><text x="285" y="90" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+
+          <!-- t₀ row: root + self -->
+          <rect x="66" y="106" width="38" height="38" fill="#276749" rx="3"/><text x="85" y="130" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="116" y="106" width="38" height="38" fill="#276749" rx="3"/><text x="135" y="130" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="166" y="106" width="38" height="38" fill="#2d3748" rx="3"/><text x="185" y="130" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="216" y="106" width="38" height="38" fill="#2d3748" rx="3"/><text x="235" y="130" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="266" y="106" width="38" height="38" fill="#2d3748" rx="3"/><text x="285" y="130" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+
+          <!-- t₁ row: root + self -->
+          <rect x="66" y="146" width="38" height="38" fill="#276749" rx="3"/><text x="85" y="170" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="116" y="146" width="38" height="38" fill="#2d3748" rx="3"/><text x="135" y="170" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="166" y="146" width="38" height="38" fill="#276749" rx="3"/><text x="185" y="170" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="216" y="146" width="38" height="38" fill="#2d3748" rx="3"/><text x="235" y="170" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="266" y="146" width="38" height="38" fill="#2d3748" rx="3"/><text x="285" y="170" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+
+          <!-- t₀₀ row: root + t₀ + self -->
+          <rect x="66" y="186" width="38" height="38" fill="#276749" rx="3"/><text x="85" y="210" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="116" y="186" width="38" height="38" fill="#276749" rx="3"/><text x="135" y="210" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="166" y="186" width="38" height="38" fill="#2d3748" rx="3"/><text x="185" y="210" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="216" y="186" width="38" height="38" fill="#276749" rx="3"/><text x="235" y="210" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="266" y="186" width="38" height="38" fill="#2d3748" rx="3"/><text x="285" y="210" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+
+          <!-- t₁₀ row: root + t₁ + self -->
+          <rect x="66" y="226" width="38" height="38" fill="#276749" rx="3"/><text x="85" y="250" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="116" y="226" width="38" height="38" fill="#2d3748" rx="3"/><text x="135" y="250" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="166" y="226" width="38" height="38" fill="#276749" rx="3"/><text x="185" y="250" text-anchor="middle" fill="white" font-size="14">✓</text>
+          <rect x="216" y="226" width="38" height="38" fill="#2d3748" rx="3"/><text x="235" y="250" text-anchor="middle" fill="#4a5568" font-size="13">✗</text>
+          <rect x="266" y="226" width="38" height="38" fill="#276749" rx="3"/><text x="285" y="250" text-anchor="middle" fill="white" font-size="14">✓</text>
+
+          <!-- legend -->
+          <rect x="66" y="275" width="14" height="14" fill="#276749" rx="2"/>
+          <text x="85" y="286" fill="#a0aec0" font-size="10">可见（祖先链+自身）</text>
+          <rect x="200" y="275" width="14" height="14" fill="#2d3748" rx="2"/>
+          <text x="218" y="286" fill="#a0aec0" font-size="10">不可见（兄弟/后代）</text>
+        </svg>
+      </div>
+      <div>
+        <p style="color:#a0aec0;font-size:0.88em;margin-bottom:12px;">
+          <strong style="color:#90cdf4">关键规则：</strong>树中每个 token 只能 attend 到它在树上的祖先路径，
+          这保证了 Target Model 的每个 draft token 都能独立地被并行计算 logits，
+          同时保持正确的因果顺序（不会看到"未来"的 token）。
+        </p>
+        <pre><code><span class="cm"># CUDA kernel 构建 mask 的核心逻辑</span>
+<span class="cm"># 每个 thread 处理一个 draft token tid</span>
+
+<span class="kw">if</span> tid == <span class="num2">0</span>:  <span class="cm"># root token</span>
+    mask[bid, <span class="num2">0</span>, <span class="num2">0</span>] = <span class="kw">True</span>   <span class="cm"># 只看自己</span>
+<span class="kw">else</span>:
+    <span class="cm"># 沿父链向上追溯，标记所有祖先为可见</span>
+    cur = tid - <span class="num2">1</span>
+    <span class="kw">while True</span>:
+        mask[bid, tid, cur+<span class="num2">1</span>] = <span class="kw">True</span>  <span class="cm"># 标记可见</span>
+        <span class="cm"># parent = top_scores_index[cur] // topk</span>
+        parent = selected_index[cur] // topk
+        <span class="kw">if</span> parent == <span class="num2">0</span>: <span class="kw">break</span>  <span class="cm"># 到达 root</span>
+        cur = <span class="fn">find_parent_pos</span>(parent)
+    mask[bid, tid, <span class="num2">0</span>] = <span class="kw">True</span>  <span class="cm"># root 也可见</span></code></pre>
+
+        <div class="highlight-box" style="margin-top:14px;">
+          <p>
+            <strong style="color:#90cdf4">位置编码（positions）：</strong>
+            每个 draft token 的位置 = 前缀长度 seq_len + 其在树中的深度。
+            Root 的 position = seq_len + 0，depth=2 的节点 position = seq_len + 2。
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 4: Target Model Attention with Tree Mask -->
+<div class="section">
+  <div class="section-title"><span class="num">4</span> Target Model 验证：带 Tree Mask 的并行 Attention</div>
+
+  <div class="card">
+    <div class="card-title">FULL_MASK 模式下的完整 Attention 矩阵</div>
+    <p style="color:#a0aec0;font-size:0.88em;margin-bottom:16px;">
+      Target Model 使用 <strong>定制的 Attention Mask</strong> 一次性处理所有 draft tokens。
+      每个 draft token 既要 attend 到 KV Cache 中存储的前缀（prefix），又要 attend 到树上的祖先 tokens。
+    </p>
+    <svg width="100%" viewBox="0 0 860 260" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#63b3ed"/>
+        </marker>
+      </defs>
+
+      <!-- Title -->
+      <text x="430" y="20" text-anchor="middle" fill="#90cdf4" font-size="13" font-weight="bold">
+        FULL_MASK 注意力矩阵（seq_len=3，draft_tokens=5，topk=2）
+      </text>
+
+      <!-- Column labels: prefix[0..2] + draft[0..4] -->
+      <text x="50" y="48" text-anchor="middle" fill="#f6ad55" font-size="10">Key→</text>
+      <text x="110" y="48" text-anchor="middle" fill="#a0aec0" font-size="10">prefix₀</text>
+      <text x="150" y="48" text-anchor="middle" fill="#a0aec0" font-size="10">prefix₁</text>
+      <text x="190" y="48" text-anchor="middle" fill="#a0aec0" font-size="10">prefix₂</text>
+      <text x="240" y="48" text-anchor="middle" fill="#68d391" font-size="10">root</text>
+      <text x="280" y="48" text-anchor="middle" fill="#68d391" font-size="10">t₀</text>
+      <text x="320" y="48" text-anchor="middle" fill="#68d391" font-size="10">t₁</text>
+      <text x="360" y="48" text-anchor="middle" fill="#68d391" font-size="10">t₀₀</text>
+      <text x="400" y="48" text-anchor="middle" fill="#68d391" font-size="10">t₁₀</text>
+
+      <!-- Row labels -->
+      <text x="50" y="80" text-anchor="middle" fill="#63b3ed" font-size="10">root</text>
+      <text x="50" y="115" text-anchor="middle" fill="#63b3ed" font-size="10">t₀</text>
+      <text x="50" y="150" text-anchor="middle" fill="#63b3ed" font-size="10">t₁</text>
+      <text x="50" y="185" text-anchor="middle" fill="#63b3ed" font-size="10">t₀₀</text>
+      <text x="50" y="220" text-anchor="middle" fill="#63b3ed" font-size="10">t₁₀</text>
+
+      <!-- Query Label -->
+      <text x="30" y="150" text-anchor="middle" fill="#f6ad55" font-size="10" transform="rotate(-90,30,150)">Query ↓</text>
+
+      <!-- Prefix region: all green (causal, all draft tokens can see prefix) -->
+      <!-- row 0 (root) -->
+      <rect x="74" y="58" width="32" height="32" fill="#276749" rx="2"/><text x="90" y="79" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="114" y="58" width="32" height="32" fill="#276749" rx="2"/><text x="130" y="79" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="154" y="58" width="32" height="32" fill="#276749" rx="2"/><text x="170" y="79" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <!-- tree cells row 0 -->
+      <rect x="214" y="58" width="32" height="32" fill="#276749" rx="2"/><text x="230" y="79" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="254" y="58" width="32" height="32" fill="#2d3748" rx="2"/><text x="270" y="79" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="294" y="58" width="32" height="32" fill="#2d3748" rx="2"/><text x="310" y="79" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="334" y="58" width="32" height="32" fill="#2d3748" rx="2"/><text x="350" y="79" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="374" y="58" width="32" height="32" fill="#2d3748" rx="2"/><text x="390" y="79" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+
+      <!-- row 1 (t₀) -->
+      <rect x="74" y="98" width="32" height="32" fill="#276749" rx="2"/><text x="90" y="119" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="114" y="98" width="32" height="32" fill="#276749" rx="2"/><text x="130" y="119" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="154" y="98" width="32" height="32" fill="#276749" rx="2"/><text x="170" y="119" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="214" y="98" width="32" height="32" fill="#276749" rx="2"/><text x="230" y="119" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="254" y="98" width="32" height="32" fill="#276749" rx="2"/><text x="270" y="119" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="294" y="98" width="32" height="32" fill="#2d3748" rx="2"/><text x="310" y="119" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="334" y="98" width="32" height="32" fill="#2d3748" rx="2"/><text x="350" y="119" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="374" y="98" width="32" height="32" fill="#2d3748" rx="2"/><text x="390" y="119" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+
+      <!-- row 2 (t₁) -->
+      <rect x="74" y="133" width="32" height="32" fill="#276749" rx="2"/><text x="90" y="154" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="114" y="133" width="32" height="32" fill="#276749" rx="2"/><text x="130" y="154" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="154" y="133" width="32" height="32" fill="#276749" rx="2"/><text x="170" y="154" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="214" y="133" width="32" height="32" fill="#276749" rx="2"/><text x="230" y="154" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="254" y="133" width="32" height="32" fill="#2d3748" rx="2"/><text x="270" y="154" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="294" y="133" width="32" height="32" fill="#276749" rx="2"/><text x="310" y="154" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="334" y="133" width="32" height="32" fill="#2d3748" rx="2"/><text x="350" y="154" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="374" y="133" width="32" height="32" fill="#2d3748" rx="2"/><text x="390" y="154" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+
+      <!-- row 3 (t₀₀) -->
+      <rect x="74" y="168" width="32" height="32" fill="#276749" rx="2"/><text x="90" y="189" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="114" y="168" width="32" height="32" fill="#276749" rx="2"/><text x="130" y="189" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="154" y="168" width="32" height="32" fill="#276749" rx="2"/><text x="170" y="189" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="214" y="168" width="32" height="32" fill="#276749" rx="2"/><text x="230" y="189" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="254" y="168" width="32" height="32" fill="#276749" rx="2"/><text x="270" y="189" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="294" y="168" width="32" height="32" fill="#2d3748" rx="2"/><text x="310" y="189" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="334" y="168" width="32" height="32" fill="#276749" rx="2"/><text x="350" y="189" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="374" y="168" width="32" height="32" fill="#2d3748" rx="2"/><text x="390" y="189" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+
+      <!-- row 4 (t₁₀) -->
+      <rect x="74" y="203" width="32" height="32" fill="#276749" rx="2"/><text x="90" y="224" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="114" y="203" width="32" height="32" fill="#276749" rx="2"/><text x="130" y="224" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="154" y="203" width="32" height="32" fill="#276749" rx="2"/><text x="170" y="224" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="214" y="203" width="32" height="32" fill="#276749" rx="2"/><text x="230" y="224" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="254" y="203" width="32" height="32" fill="#2d3748" rx="2"/><text x="270" y="224" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="294" y="203" width="32" height="32" fill="#276749" rx="2"/><text x="310" y="224" text-anchor="middle" fill="white" font-size="12">✓</text>
+      <rect x="334" y="203" width="32" height="32" fill="#2d3748" rx="2"/><text x="350" y="224" text-anchor="middle" fill="#4a5568" font-size="11">✗</text>
+      <rect x="374" y="203" width="32" height="32" fill="#276749" rx="2"/><text x="390" y="224" text-anchor="middle" fill="white" font-size="12">✓</text>
+
+      <!-- Brace / region labels -->
+      <rect x="74" y="240" width="112" height="8" rx="3" fill="#f6ad55" opacity="0.4"/>
+      <text x="130" y="255" text-anchor="middle" fill="#f6ad55" font-size="10">prefix 区域 (always ✓)</text>
+      <rect x="214" y="240" width="192" height="8" rx="3" fill="#68d391" opacity="0.4"/>
+      <text x="310" y="255" text-anchor="middle" fill="#68d391" font-size="10">树内部区域 (按路径)</text>
+
+      <!-- Right side explanation -->
+      <text x="440" y="75" fill="#a0aec0" font-size="11">root = seq_len 位置</text>
+      <text x="440" y="115" fill="#a0aec0" font-size="11">t₀ 看到: prefix + root + self</text>
+      <text x="440" y="150" fill="#a0aec0" font-size="11">t₁ 看到: prefix + root + self</text>
+      <text x="440" y="185" fill="#a0aec0" font-size="11">t₀₀ 看到: prefix + root + t₀ + self</text>
+      <text x="440" y="220" fill="#a0aec0" font-size="11">t₁₀ 看到: prefix + root + t₁ + self</text>
+
+      <line x1="430" y1="58" x2="430" y2="235" stroke="#4a5568" stroke-width="1" stroke-dasharray="4"/>
+      <text x="620" y="48" text-anchor="middle" fill="#718096" font-size="11" font-style="italic">（t₀ 与 t₁ 互不可见，保证独立性）</text>
+    </svg>
+  </div>
+</div>
+
+<!-- SECTION 5: Tree Verification DFS -->
+<div class="section">
+  <div class="section-title"><span class="num">5</span> 验证阶段：DFS 树遍历找最长接受链</div>
+
+  <div class="card">
+    <div class="card-title">VerifyTreeGreedy — CUDA Kernel 逻辑</div>
+    <div class="grid-2">
+      <div>
+        <pre><code><span class="cm">// grid=(bs,) block=(1,) — 每个 seq 串行遍历</span>
+<span class="cm">// 但不同 seq 并行，batch 级别有并行</span>
+__global__ <span class="kw">void</span> <span class="fn">VerifyTreeGreedy</span>(...) {
+  <span class="kw">int</span> bid = blockIdx.x;
+
+  <span class="cm">// Step 1: root 直接接受</span>
+  <span class="kw">int</span> last_accepted = retrive_index[bid, <span class="num2">0</span>];
+  accept_index[bid, <span class="num2">0</span>] = last_accepted;
+  <span class="kw">int</span> num_accepted = <span class="num2">0</span>;
+  <span class="kw">int</span> cur_index = <span class="num2">0</span>;  <span class="cm">// root</span>
+
+  <span class="cm">// Step 2: 逐层向下遍历</span>
+  <span class="kw">for</span> (<span class="kw">int</span> j = <span class="num2">1</span>; j &lt; num_spec_steps; j++) {
+    <span class="cm">// 获取第一个子节点</span>
+    cur_index = retrive_next_token[bid, cur_index];
+
+    <span class="cm">// 遍历当前层的所有候选（兄弟链）</span>
+    <span class="kw">while</span> (cur_index != -<span class="num2">1</span>) {
+      <span class="kw">int</span> draft_tok = candidates[bid, cur_index];
+      <span class="kw">int</span> target_tok = target_predict[last_accepted];
+
+      <span class="kw">if</span> (draft_tok == target_tok) {
+        <span class="cm">// ✓ 接受：沿此路径继续</span>
+        predicts[last_accepted] = target_tok;
+        accept_index[bid, ++num_accepted] =
+            retrive_index[bid, cur_index];
+        last_accepted = retrive_index[bid, cur_index];
+        <span class="kw">break</span>;
+      } <span class="kw">else</span> {
+        <span class="cm">// ✗ 拒绝：尝试下一兄弟</span>
+        cur_index = retrive_next_sibling[bid, cur_index];
+      }
+    }
+    <span class="kw">if</span> (cur_index == -<span class="num2">1</span>) <span class="kw">break</span>;  <span class="cm">// 全部拒绝</span>
+  }
+  accept_token_num[bid] = num_accepted;
+}</code></pre>
+      </div>
+      <div>
+        <!-- DFS verification animation/diagram -->
+        <svg width="100%" viewBox="0 0 340 320" xmlns="http://www.w3.org/2000/svg">
+          <text x="170" y="18" text-anchor="middle" fill="#90cdf4" font-size="12" font-weight="bold">验证过程 DFS 示意</text>
+          <text x="170" y="32" text-anchor="middle" fill="#718096" font-size="10">假设 target 预测 root→t₁→t₁₀ 这条路径</text>
+
+          <!-- Tree nodes -->
+          <!-- Root -->
+          <circle cx="170" cy="60" r="20" fill="#276749" stroke="#68d391" stroke-width="2"/>
+          <text x="170" y="65" text-anchor="middle" fill="white" font-size="11">root</text>
+          <text x="195" y="55" fill="#68d391" font-size="9">✓接受</text>
+
+          <!-- Depth 1 -->
+          <circle cx="90" cy="130" r="18" fill="#9b2c2c" stroke="#fc8181" stroke-width="1.5"/>
+          <text x="90" y="135" text-anchor="middle" fill="white" font-size="10">t₀</text>
+          <text x="60" y="128" text-anchor="end" fill="#fc8181" font-size="9">✗拒绝</text>
+
+          <circle cx="250" cy="130" r="18" fill="#276749" stroke="#68d391" stroke-width="2"/>
+          <text x="250" y="135" text-anchor="middle" fill="white" font-size="10">t₁</text>
+          <text x="280" y="128" fill="#68d391" font-size="9">✓接受</text>
+
+          <!-- Depth 2 -->
+          <circle cx="170" cy="200" r="16" fill="#9b2c2c" stroke="#fc8181" stroke-width="1.5" opacity="0.4"/>
+          <text x="170" y="205" text-anchor="middle" fill="#718096" font-size="10">t₀₀</text>
+          <text x="155" y="195" text-anchor="end" fill="#4a5568" font-size="9">已剪枝</text>
+
+          <circle cx="290" cy="200" r="16" fill="#276749" stroke="#68d391" stroke-width="2"/>
+          <text x="290" y="205" text-anchor="middle" fill="white" font-size="10">t₁₀</text>
+          <text x="315" y="198" fill="#68d391" font-size="9">✓接受</text>
+
+          <!-- Edges -->
+          <line x1="155" y1="76" x2="103" y2="114" stroke="#4a5568" stroke-width="1.5"/>
+          <line x1="185" y1="76" x2="237" y2="114" stroke="#68d391" stroke-width="2"/>
+          <line x1="235" y1="146" x2="180" y2="186" stroke="#4a5568" stroke-width="1" opacity="0.4" stroke-dasharray="4"/>
+          <line x1="262" y1="146" x2="282" y2="186" stroke="#68d391" stroke-width="2"/>
+
+          <!-- DFS path highlight -->
+          <path d="M170 80 L170 110 L250 110 L250 148 L290 148 L290 184"
+                stroke="#f6ad55" stroke-width="2" fill="none" stroke-dasharray="6,3"/>
+
+          <!-- Steps annotations -->
+          <rect x="10" y="245" width="320" height="70" rx="6" fill="#1a202c" stroke="#2d3748"/>
+          <text x="20" y="263" fill="#90cdf4" font-size="11" font-weight="bold">DFS 遍历步骤：</text>
+          <text x="20" y="278" fill="#a0aec0" font-size="10">1. root → accept[0] = retrive_index[root]</text>
+          <text x="20" y="292" fill="#a0aec0" font-size="10">2. 尝试t₀(×) → 尝试兄弟t₁(✓) → accept[1] = retrive_index[t₁]</text>
+          <text x="20" y="306" fill="#a0aec0" font-size="10">3. 尝试t₀₀(×,不在t₁子树) → 尝试兄弟t₁₀(✓) → accept[2]</text>
+
+          <!-- sibling arrow -->
+          <path d="M90 148 Q170 155 245 135" stroke="#f6ad55" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+          <text x="165" y="165" fill="#f6ad55" font-size="9">retrive_next_sibling</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">retrive_next_token 与 retrive_next_sibling 的数据布局</div>
+    <svg width="100%" viewBox="0 0 800 170" xmlns="http://www.w3.org/2000/svg">
+      <text x="400" y="18" text-anchor="middle" fill="#90cdf4" font-size="12" font-weight="bold">
+        topk=2, depth=3，5个draft tokens的导航数组（单个batch）
+      </text>
+
+      <!-- Index labels -->
+      <text x="100" y="40" text-anchor="middle" fill="#718096" font-size="10">token idx:</text>
+      <text x="200" y="40" text-anchor="middle" fill="#68d391" font-size="11">0 (root)</text>
+      <text x="310" y="40" text-anchor="middle" fill="#68d391" font-size="11">1 (t₀)</text>
+      <text x="420" y="40" text-anchor="middle" fill="#68d391" font-size="11">2 (t₁)</text>
+      <text x="530" y="40" text-anchor="middle" fill="#68d391" font-size="11">3 (t₀₀)</text>
+      <text x="650" y="40" text-anchor="middle" fill="#68d391" font-size="11">4 (t₁₀)</text>
+
+      <!-- retrive_next_token row -->
+      <text x="100" y="80" text-anchor="middle" fill="#63b3ed" font-size="10">next_token:</text>
+      <rect x="165" y="60" width="70" height="32" rx="4" fill="#2b6cb0" stroke="#4299e1"/>
+      <text x="200" y="80" text-anchor="middle" fill="white" font-size="12">1</text>
+      <text x="200" y="100" text-anchor="middle" fill="#a0aec0" font-size="9">→ 第一个子: t₀</text>
+      <rect x="275" y="60" width="70" height="32" rx="4" fill="#2b6cb0" stroke="#4299e1"/>
+      <text x="310" y="80" text-anchor="middle" fill="white" font-size="12">3</text>
+      <text x="310" y="100" text-anchor="middle" fill="#a0aec0" font-size="9">→ 子节点: t₀₀</text>
+      <rect x="385" y="60" width="70" height="32" rx="4" fill="#2b6cb0" stroke="#4299e1"/>
+      <text x="420" y="80" text-anchor="middle" fill="white" font-size="12">4</text>
+      <text x="420" y="100" text-anchor="middle" fill="#a0aec0" font-size="9">→ 子节点: t₁₀</text>
+      <rect x="495" y="60" width="70" height="32" rx="4" fill="#4a5568" stroke="#718096"/>
+      <text x="530" y="80" text-anchor="middle" fill="#718096" font-size="12">-1</text>
+      <text x="530" y="100" text-anchor="middle" fill="#4a5568" font-size="9">叶子节点</text>
+      <rect x="615" y="60" width="70" height="32" rx="4" fill="#4a5568" stroke="#718096"/>
+      <text x="650" y="80" text-anchor="middle" fill="#718096" font-size="12">-1</text>
+      <text x="650" y="100" text-anchor="middle" fill="#4a5568" font-size="9">叶子节点</text>
+
+      <!-- retrive_next_sibling row -->
+      <text x="100" y="135" text-anchor="middle" fill="#f6ad55" font-size="10">next_sibling:</text>
+      <rect x="165" y="115" width="70" height="32" rx="4" fill="#4a5568" stroke="#718096"/>
+      <text x="200" y="135" text-anchor="middle" fill="#718096" font-size="12">-1</text>
+      <rect x="275" y="115" width="70" height="32" rx="4" fill="#c05621" stroke="#f6ad55"/>
+      <text x="310" y="135" text-anchor="middle" fill="white" font-size="12">2</text>
+      <text x="310" y="152" text-anchor="middle" fill="#f6ad55" font-size="9">兄弟: t₁</text>
+      <rect x="385" y="115" width="70" height="32" rx="4" fill="#4a5568" stroke="#718096"/>
+      <text x="420" y="135" text-anchor="middle" fill="#718096" font-size="12">-1</text>
+      <rect x="495" y="115" width="70" height="32" rx="4" fill="#4a5568" stroke="#718096"/>
+      <text x="530" y="135" text-anchor="middle" fill="#718096" font-size="12">-1</text>
+      <rect x="615" y="115" width="70" height="32" rx="4" fill="#4a5568" stroke="#718096"/>
+      <text x="650" y="135" text-anchor="middle" fill="#718096" font-size="12">-1</text>
+    </svg>
+  </div>
+</div>
+
+<!-- SECTION 6: KV Cache for topk>1 -->
+<div class="section">
+  <div class="section-title"><span class="num">6</span> topk &gt; 1 时的 KV Cache 管理</div>
+
+  <div class="highlight-box warn">
+    <p>
+      <strong>难点：</strong>当 topk &gt; 1 时，每个 draft token 对应的 KV 需要存储在独立位置（不同分支共享前缀但各有自己的扩展）。
+      验证后需要将接受路径的 KV 拷贝到连续位置，并释放不接受的分支。
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">KV Cache 分配与验证后整理</div>
+    <svg width="100%" viewBox="0 0 820 240" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#68d391"/>
+        </marker>
+        <marker id="arr4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#fc8181"/>
+        </marker>
+      </defs>
+
+      <!-- Before verification -->
+      <text x="200" y="20" text-anchor="middle" fill="#90cdf4" font-size="12" font-weight="bold">验证前：KV Cache 布局（5 个 draft slots）</text>
+
+      <!-- KV slots -->
+      <rect x="20" y="30" width="60" height="40" rx="4" fill="#2b6cb0" stroke="#63b3ed"/>
+      <text x="50" y="55" text-anchor="middle" fill="white" font-size="10">slot[0]</text>
+      <text x="50" y="68" text-anchor="middle" fill="#a0aec0" font-size="9">root KV</text>
+
+      <rect x="90" y="30" width="60" height="40" rx="4" fill="#276749" stroke="#68d391"/>
+      <text x="120" y="55" text-anchor="middle" fill="white" font-size="10">slot[1]</text>
+      <text x="120" y="68" text-anchor="middle" fill="#a0aec0" font-size="9">t₀ KV</text>
+
+      <rect x="160" y="30" width="60" height="40" rx="4" fill="#553c9a" stroke="#b794f4"/>
+      <text x="190" y="55" text-anchor="middle" fill="white" font-size="10">slot[2]</text>
+      <text x="190" y="68" text-anchor="middle" fill="#a0aec0" font-size="9">t₁ KV</text>
+
+      <rect x="230" y="30" width="60" height="40" rx="4" fill="#276749" stroke="#68d391"/>
+      <text x="260" y="55" text-anchor="middle" fill="white" font-size="10">slot[3]</text>
+      <text x="260" y="68" text-anchor="middle" fill="#a0aec0" font-size="9">t₀₀ KV</text>
+
+      <rect x="300" y="30" width="60" height="40" rx="4" fill="#553c9a" stroke="#b794f4"/>
+      <text x="330" y="55" text-anchor="middle" fill="white" font-size="10">slot[4]</text>
+      <text x="330" y="68" text-anchor="middle" fill="#a0aec0" font-size="9">t₁₀ KV</text>
+
+      <!-- Verification result -->
+      <text x="500" y="45" fill="#68d391" font-size="11">✓ 接受路径: root → t₁ → t₁₀</text>
+      <text x="500" y="62" fill="#fc8181" font-size="11">✗ 拒绝: t₀, t₀₀</text>
+
+      <!-- After verification -->
+      <text x="200" y="110" text-anchor="middle" fill="#90cdf4" font-size="12" font-weight="bold">验证后：整理 KV Cache（move + free）</text>
+
+      <!-- New slots: accepted tokens -->
+      <rect x="20" y="120" width="60" height="40" rx="4" fill="#2b6cb0" stroke="#63b3ed"/>
+      <text x="50" y="145" text-anchor="middle" fill="white" font-size="10">slot[0]</text>
+      <text x="50" y="158" text-anchor="middle" fill="#a0aec0" font-size="9">root KV</text>
+
+      <rect x="90" y="120" width="60" height="40" rx="4" fill="#553c9a" stroke="#b794f4"/>
+      <text x="120" y="145" text-anchor="middle" fill="white" font-size="10">slot[1]</text>
+      <text x="120" y="158" text-anchor="middle" fill="#a0aec0" font-size="9">t₁ KV ←移入</text>
+
+      <rect x="160" y="120" width="60" height="40" rx="4" fill="#553c9a" stroke="#b794f4"/>
+      <text x="190" y="145" text-anchor="middle" fill="white" font-size="10">slot[2]</text>
+      <text x="190" y="158" text-anchor="middle" fill="#a0aec0" font-size="9">t₁₀ KV ←移入</text>
+
+      <!-- freed slots -->
+      <rect x="230" y="120" width="60" height="40" rx="4" fill="#2d3748" stroke="#4a5568" stroke-dasharray="4"/>
+      <text x="260" y="145" text-anchor="middle" fill="#4a5568" font-size="10">freed</text>
+      <rect x="300" y="120" width="60" height="40" rx="4" fill="#2d3748" stroke="#4a5568" stroke-dasharray="4"/>
+      <text x="330" y="145" text-anchor="middle" fill="#4a5568" font-size="10">freed</text>
+
+      <!-- Move arrows -->
+      <path d="M190 70 C190 90 120 100 120 118" stroke="#b794f4" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+      <text x="170" y="100" fill="#b794f4" font-size="9">move</text>
+      <path d="M330 70 C330 90 190 100 190 118" stroke="#b794f4" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+      <text x="300" y="95" fill="#b794f4" font-size="9">move</text>
+
+      <!-- Free annotations -->
+      <line x1="120" y1="70" x2="250" y2="118" stroke="#fc8181" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arr4)"/>
+      <line x1="260" y1="70" x2="310" y2="118" stroke="#fc8181" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arr4)"/>
+
+      <!-- Code annotation -->
+      <rect x="440" y="120" width="360" height="100" rx="6" fill="#171923" stroke="#2d3748"/>
+      <text x="450" y="140" fill="#f6ad55" font-size="10" font-family="monospace">src_cache_loc, tgt_cache_loc, to_free =</text>
+      <text x="450" y="155" fill="#f6ad55" font-size="10" font-family="monospace">    get_src_tgt_cache_loc(...)</text>
+      <text x="450" y="173" fill="#63b3ed" font-size="10" font-family="monospace">kvcache.move_kv_cache(</text>
+      <text x="450" y="188" fill="#63b3ed" font-size="10" font-family="monospace">    tgt_cache_loc, src_cache_loc)</text>
+      <text x="450" y="206" fill="#fc8181" font-size="10" font-family="monospace">allocator.free(to_free_slots)</text>
+    </svg>
+  </div>
+</div>
+
+<!-- SECTION 7: Complete Flow Diagram -->
+<div class="section">
+  <div class="section-title"><span class="num">7</span> 完整调用链与数据流总图</div>
+  <div class="card">
+    <svg width="100%" viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="fa" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4a5568"/>
+        </marker>
+        <marker id="fa2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#63b3ed"/>
+        </marker>
+        <marker id="fa3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#68d391"/>
+        </marker>
+        <marker id="fa4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#f6ad55"/>
+        </marker>
+      </defs>
+
+      <!-- Title -->
+      <text x="450" y="22" text-anchor="middle" fill="#90cdf4" font-size="14" font-weight="bold">SGLang EAGLE Tree Decoding 完整调用流程</text>
+
+      <!-- === Stage 1: Target Prefill === -->
+      <rect x="20" y="38" width="200" height="60" rx="8" fill="#1e3a5f" stroke="#63b3ed" stroke-width="1.5"/>
+      <text x="120" y="64" text-anchor="middle" fill="#63b3ed" font-size="12" font-weight="bold">Target Model Prefill</text>
+      <text x="120" y="82" text-anchor="middle" fill="#a0aec0" font-size="10">生成 verified_id, hidden_states</text>
+
+      <!-- === Stage 2: Draft Forward === -->
+      <rect x="260" y="38" width="200" height="60" rx="8" fill="#1e3a5f" stroke="#63b3ed" stroke-width="1.5"/>
+      <text x="360" y="60" text-anchor="middle" fill="#63b3ed" font-size="12" font-weight="bold">Draft Forward Loop</text>
+      <text x="360" y="76" text-anchor="middle" fill="#a0aec0" font-size="10">for step 0..depth-1:</text>
+      <text x="360" y="91" text-anchor="middle" fill="#a0aec0" font-size="10">select_top_k_tokens()</text>
+
+      <!-- sub-boxes for draft steps -->
+      <rect x="260" y="115" width="90" height="40" rx="5" fill="#162032" stroke="#4299e1"/>
+      <text x="305" y="133" text-anchor="middle" fill="#90cdf4" font-size="10">Step 0</text>
+      <text x="305" y="147" text-anchor="middle" fill="#a0aec0" font-size="9">topk_p, topk_idx</text>
+
+      <rect x="365" y="115" width="90" height="40" rx="5" fill="#162032" stroke="#4299e1"/>
+      <text x="410" y="133" text-anchor="middle" fill="#90cdf4" font-size="10">Step 1..n</text>
+      <text x="410" y="147" text-anchor="middle" fill="#a0aec0" font-size="9">expand_scores</text>
+
+      <!-- arrow 1->2 -->
+      <line x1="220" y1="68" x2="258" y2="68" stroke="#63b3ed" stroke-width="1.5" marker-end="url(#fa2)"/>
+
+      <!-- === Stage 3: organize_draft_results === -->
+      <rect x="260" y="175" width="200" height="50" rx="8" fill="#1a2e1e" stroke="#68d391" stroke-width="1.5"/>
+      <text x="360" y="197" text-anchor="middle" fill="#68d391" font-size="11" font-weight="bold">organize_draft_results()</text>
+      <text x="360" y="213" text-anchor="middle" fill="#a0aec0" font-size="10">parent_list, top_scores_index, draft_tokens</text>
+
+      <!-- arrow draft loop -> organize -->
+      <line x1="360" y1="155" x2="360" y2="173" stroke="#63b3ed" stroke-width="1.5" marker-end="url(#fa2)"/>
+
+      <!-- === Stage 4: build_tree_kernel_efficient === -->
+      <rect x="500" y="38" width="380" height="190" rx="8" fill="#16213e" stroke="#b794f4" stroke-width="1.5"/>
+      <text x="690" y="60" text-anchor="middle" fill="#b794f4" font-size="12" font-weight="bold">build_tree_kernel_efficient()</text>
+      <text x="690" y="76" text-anchor="middle" fill="#718096" font-size="10">eagle_utils.py → sgl-kernel CUDA</text>
+
+      <!-- sub-items -->
+      <rect x="515" y="88" width="160" height="36" rx="4" fill="#2d1b5f" stroke="#b794f4"/>
+      <text x="595" y="108" text-anchor="middle" fill="#b794f4" font-size="10">tree_mask 构建</text>
+      <text x="595" y="120" text-anchor="middle" fill="#718096" font-size="9">父链追溯 → 可见性</text>
+
+      <rect x="690" y="88" width="175" height="36" rx="4" fill="#2d1b5f" stroke="#b794f4"/>
+      <text x="777" y="108" text-anchor="middle" fill="#b794f4" font-size="10">positions 计算</text>
+      <text x="777" y="120" text-anchor="middle" fill="#718096" font-size="9">seq_len + depth</text>
+
+      <rect x="515" y="138" width="160" height="36" rx="4" fill="#2d1b5f" stroke="#b794f4"/>
+      <text x="595" y="157" text-anchor="middle" fill="#b794f4" font-size="10">retrive_index</text>
+      <text x="595" y="170" text-anchor="middle" fill="#718096" font-size="9">token → logits 映射</text>
+
+      <rect x="690" y="138" width="175" height="36" rx="4" fill="#2d1b5f" stroke="#b794f4"/>
+      <text x="777" y="157" text-anchor="middle" fill="#b794f4" font-size="10">next_token/sibling</text>
+      <text x="777" y="170" text-anchor="middle" fill="#718096" font-size="9">DFS 遍历导航</text>
+
+      <!-- Output label -->
+      <text x="690" y="205" text-anchor="middle" fill="#e9d8fd" font-size="10">Output: EagleVerifyInput</text>
+      <text x="690" y="218" text-anchor="middle" fill="#718096" font-size="9">draft_token, tree_mask, positions, retrive_*</text>
+
+      <!-- arrow organize -> build -->
+      <line x1="460" y1="200" x2="498" y2="130" stroke="#68d391" stroke-width="1.5" marker-end="url(#fa3)"/>
+
+      <!-- === Stage 5: Target Verify Forward === -->
+      <rect x="500" y="255" width="380" height="70" rx="8" fill="#1a3a2a" stroke="#68d391" stroke-width="1.5"/>
+      <text x="690" y="280" text-anchor="middle" fill="#68d391" font-size="12" font-weight="bold">Target Model Forward (with Tree Mask)</text>
+      <text x="690" y="296" text-anchor="middle" fill="#a0aec0" font-size="10">Attention: custom_mask 限制可见性，positions 做 RoPE</text>
+      <text x="690" y="311" text-anchor="middle" fill="#a0aec0" font-size="10">输出: logits[bs*draft_tokens, vocab]</text>
+
+      <!-- arrow build -> verify forward -->
+      <line x1="690" y1="228" x2="690" y2="253" stroke="#b794f4" stroke-width="1.5" marker-end="url(#fa)"/>
+
+      <!-- === Stage 6: Tree Verification === -->
+      <rect x="500" y="350" width="380" height="80" rx="8" fill="#3a2a1a" stroke="#f6ad55" stroke-width="1.5"/>
+      <text x="690" y="375" text-anchor="middle" fill="#f6ad55" font-size="12" font-weight="bold">VerifyTreeGreedy / tree_speculative_sampling</text>
+      <text x="690" y="392" text-anchor="middle" fill="#a0aec0" font-size="10">DFS 遍历: retrive_next_token + retrive_next_sibling</text>
+      <text x="690" y="408" text-anchor="middle" fill="#a0aec0" font-size="10">输出: accept_index[bs, spec+1], accept_token_num[bs]</text>
+
+      <!-- arrow verify forward -> tree verify -->
+      <line x1="690" y1="325" x2="690" y2="348" stroke="#68d391" stroke-width="1.5" marker-end="url(#fa3)"/>
+
+      <!-- === Stage 7: KV Cache Reorganize === -->
+      <rect x="500" y="455" width="380" height="80" rx="8" fill="#2d2a1a" stroke="#ed8936" stroke-width="1.5"/>
+      <text x="690" y="478" text-anchor="middle" fill="#ed8936" font-size="12" font-weight="bold">KV Cache Reorganization</text>
+      <text x="690" y="496" text-anchor="middle" fill="#a0aec0" font-size="10">get_src_tgt_cache_loc() → move_kv_cache()</text>
+      <text x="690" y="512" text-anchor="middle" fill="#a0aec0" font-size="10">释放拒绝分支的 slots → 更新 seq_lens</text>
+
+      <!-- arrow tree verify -> kv reorg -->
+      <line x1="690" y1="430" x2="690" y2="453" stroke="#f6ad55" stroke-width="1.5" marker-end="url(#fa4)"/>
+
+      <!-- === Stage 8: Next iteration === -->
+      <rect x="20" y="350" width="200" height="60" rx="8" fill="#1e2a1e" stroke="#68d391" stroke-width="1.5"/>
+      <text x="120" y="376" text-anchor="middle" fill="#68d391" font-size="11" font-weight="bold">下一轮 Draft 迭代</text>
+      <text x="120" y="394" text-anchor="middle" fill="#a0aec0" font-size="10">verified_id = 接受的最后 token</text>
+      <text x="120" y="408" text-anchor="middle" fill="#a0aec0" font-size="10">hidden_states 来自 Target Forward</text>
+
+      <!-- feedback loop arrow -->
+      <path d="M500 495 L460 495 L460 380 L222 380" stroke="#ed8936" stroke-width="1.5" fill="none" stroke-dasharray="6,3" marker-end="url(#fa4)"/>
+      <text x="450" y="442" fill="#ed8936" font-size="9" text-anchor="middle">循环直到</text>
+      <text x="450" y="455" fill="#ed8936" font-size="9" text-anchor="middle">EOS/max_tokens</text>
+
+      <!-- Loop back arrow: next iter -> draft forward -->
+      <line x1="120" y1="350" x2="120" y2="250" stroke="#68d391" stroke-width="1.5" marker-end="url(#fa3)"/>
+      <line x1="120" y1="250" x2="258" y2="68" stroke="#68d391" stroke-width="1.5" marker-end="url(#fa3)"/>
+    </svg>
+  </div>
+</div>
+
+<!-- SECTION 8: Performance -->
+<div class="section">
+  <div class="section-title"><span class="num">8</span> topk=1 vs topk&gt;1 性能对比</div>
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-title">树结构复杂度</div>
+      <table>
+        <tr><th>指标</th><th>topk=1</th><th>topk=2</th></tr>
+        <tr><td>draft tokens</td><td>depth</td><td>depth*(2-1)+1</td></tr>
+        <tr><td>树路径数</td><td>1</td><td>2^(depth-1)</td></tr>
+        <tr><td>验证步骤</td><td>线性</td><td>DFS with sibling</td></tr>
+        <tr><td>接受率提升</td><td>基准</td><td>+15%~30%</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title">Attention 代价</div>
+      <table>
+        <tr><th>模式</th><th>Mask 大小</th><th>适用</th></tr>
+        <tr><td>FULL_MASK</td><td>O(seq·draft)</td><td>通用</td></tr>
+        <tr><td>QLEN_ONLY</td><td>O(draft²)</td><td>长序列优化</td></tr>
+        <tr><td>BITPACK</td><td>O(draft²/8)</td><td>内存受限</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title">KV Cache 代价</div>
+      <table>
+        <tr><th>场景</th><th>额外开销</th></tr>
+        <tr><td>page_size=1</td><td>topk 倍 draft slots</td></tr>
+        <tr><td>page_size&gt;1</td><td>每分支独立页分配</td></tr>
+        <tr><td>验证后整理</td><td>move + free 操作</td></tr>
+        <tr><td>总体内存</td><td>~topk 倍基准</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="highlight-box">
+    <p>
+      <strong style="color:#90cdf4">核心权衡：</strong>
+      topk &gt; 1 通过保留多条候选路径显著提升接受率（每次投机解码轮次平均接受更多 token），
+      代价是 KV Cache 增加约 topk 倍，以及 Attention Mask 计算更复杂。
+      在 GPU 内存充足的情况下，topk=2 通常是最优平衡点。
+    </p>
+  </div>
+</div>
+
+</div><!-- end container -->
+
+<div style="background:#0d1117; border-top:1px solid #2d3748; padding:20px; text-align:center; color:#4a5568; font-size:0.85em; margin-top:20px;">
+  SGLang EAGLE Tree Decoding 原理分析 | 基于 sglang 源码
+  <span style="margin-left:20px;">核心文件: eagle_utils.py, eagle_info.py, eagle_worker_v2.py, spec_utils.py, eagle_utils.cu</span>
+</div>
+
+</body>
+</html>

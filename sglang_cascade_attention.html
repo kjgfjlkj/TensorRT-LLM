@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang Cascade Attention — Target Verify with topk > 1</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d2e;
+    --surface2: #252840;
+    --border: #353860;
+    --accent: #6c8cff;
+    --accent2: #ff6c9d;
+    --accent3: #6cffb8;
+    --accent4: #ffd166;
+    --text: #e8eaf6;
+    --text-muted: #8890c0;
+    --code-bg: #0d1117;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    line-height: 1.6;
+  }
+  .hero {
+    background: linear-gradient(135deg, #1a1d2e 0%, #0d1117 50%, #1a1d2e 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 48px 40px 36px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -60px; right: -60px;
+    width: 300px; height: 300px;
+    background: radial-gradient(circle, rgba(108,140,255,0.15) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 10px;
+  }
+  .hero p { color: var(--text-muted); font-size: 1rem; max-width: 700px; }
+  .hero .badge {
+    display: inline-block;
+    background: rgba(108,140,255,0.15);
+    border: 1px solid rgba(108,140,255,0.4);
+    color: var(--accent);
+    border-radius: 20px;
+    padding: 3px 12px;
+    font-size: 0.75rem;
+    margin-right: 8px;
+    margin-bottom: 12px;
+  }
+  .nav {
+    display: flex;
+    gap: 4px;
+    padding: 12px 40px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .nav a {
+    color: var(--text-muted);
+    text-decoration: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+  }
+  .nav a:hover { background: var(--surface2); color: var(--text); }
+  .container { max-width: 1200px; margin: 0 auto; padding: 40px; }
+  section { margin-bottom: 56px; }
+  h2 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: 14px;
+    margin-bottom: 24px;
+  }
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--accent4);
+    margin: 20px 0 10px;
+  }
+  p { color: var(--text-muted); margin-bottom: 12px; }
+  /* ---------- cards ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  /* ---------- two-col grid ---------- */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  @media(max-width:800px) { .grid2,.grid3 { grid-template-columns:1fr; } }
+  /* ---------- code ---------- */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-size: 0.8rem;
+    line-height: 1.7;
+    margin: 12px 0;
+  }
+  code { font-family: 'Fira Code', 'Cascadia Code', monospace; }
+  .kw { color: #ff79c6; }
+  .fn { color: #50fa7b; }
+  .st { color: #f1fa8c; }
+  .cm { color: #6272a4; }
+  .num { color: #bd93f9; }
+  .var { color: #8be9fd; }
+  .cl { color: #ffb86c; }
+  /* ---------- flow diagrams ---------- */
+  .flow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0;
+    margin: 20px 0;
+  }
+  .flow-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    text-align: center;
+    font-size: 0.82rem;
+    min-width: 110px;
+  }
+  .flow-box.highlight { border-color: var(--accent); color: var(--accent); }
+  .flow-box.highlight2 { border-color: var(--accent2); color: var(--accent2); }
+  .flow-box.highlight3 { border-color: var(--accent3); color: var(--accent3); }
+  .flow-box.highlight4 { border-color: var(--accent4); color: var(--accent4); }
+  .flow-arrow {
+    color: var(--text-muted);
+    font-size: 1.4rem;
+    padding: 0 8px;
+  }
+  /* ---------- table ---------- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.83rem;
+  }
+  th {
+    background: var(--surface2);
+    color: var(--accent);
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 2px solid var(--border);
+  }
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  tr:hover td { background: rgba(108,140,255,0.05); }
+  td code { color: var(--accent3); background: rgba(108,255,184,0.08); padding: 1px 5px; border-radius: 4px; }
+  /* ---------- SVG diagrams ---------- */
+  .svg-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  /* ---------- callout ---------- */
+  .callout {
+    border-left: 4px solid var(--accent4);
+    background: rgba(255,209,102,0.07);
+    padding: 14px 18px;
+    border-radius: 0 8px 8px 0;
+    margin: 14px 0;
+    font-size: 0.88rem;
+    color: var(--text);
+  }
+  .callout.info { border-color: var(--accent); background: rgba(108,140,255,0.07); }
+  .callout.success { border-color: var(--accent3); background: rgba(108,255,184,0.07); }
+  .callout.warn { border-color: var(--accent4); background: rgba(255,209,102,0.07); }
+  /* ---------- step indicator ---------- */
+  .steps { display: flex; flex-direction: column; gap: 12px; }
+  .step {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+  .step-num.s2 { background: var(--accent2); }
+  .step-num.s3 { background: var(--accent3); color: #000; }
+  .step-num.s4 { background: var(--accent4); color: #000; }
+  .step-body { flex: 1; }
+  .step-body h4 { font-size: 0.9rem; font-weight: 600; margin-bottom: 4px; }
+  /* ---------- attention mask vis ---------- */
+  .mask-grid {
+    display: inline-grid;
+    gap: 3px;
+    padding: 16px;
+    background: var(--code-bg);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin: 12px 0;
+  }
+  .mask-cell {
+    width: 28px; height: 28px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+  }
+  .mask-1 { background: rgba(108,140,255,0.6); color: #fff; }
+  .mask-0 { background: rgba(255,255,255,0.05); color: #555; }
+  .mask-p { background: rgba(108,255,184,0.4); color: #000; }
+  /* ---------- merge viz ---------- */
+  .merge-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 16px 0;
+    flex-wrap: wrap;
+  }
+  .merge-box {
+    border-radius: 8px;
+    padding: 12px 18px;
+    text-align: center;
+    font-size: 0.82rem;
+    font-weight: 600;
+    min-width: 120px;
+  }
+  .merge-box.a { background: rgba(108,140,255,0.2); border: 1px solid var(--accent); color: var(--accent); }
+  .merge-box.b { background: rgba(255,108,157,0.2); border: 1px solid var(--accent2); color: var(--accent2); }
+  .merge-box.c { background: rgba(108,255,184,0.2); border: 1px solid var(--accent3); color: var(--accent3); }
+  .op { font-size: 1.4rem; color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+  <span class="badge">SGLang</span>
+  <span class="badge">Speculative Decoding</span>
+  <span class="badge">FlashAttention</span>
+  <span class="badge">EAGLE topk &gt; 1</span>
+  <h1>Cascade Attention — Target Verify (topk &gt; 1)</h1>
+  <p>深度解析 <code>flashattention_backend.py</code> 中 Target Verify 阶段使用 Cascade Attention 处理 EAGLE topk &gt; 1 的完整代码设计。</p>
+</div>
+
+<!-- Nav -->
+<nav class="nav">
+  <a href="#bg">背景</a>
+  <a href="#why">为何需要 Cascade</a>
+  <a href="#metadata">Metadata 构建</a>
+  <a href="#mask">Custom Mask 处理</a>
+  <a href="#attn1">Stage 1: 公共前缀注意力</a>
+  <a href="#attn2">Stage 2: Draft Token 注意力</a>
+  <a href="#merge">merge_state_v2 合并</a>
+  <a href="#swa">SWA 特殊处理</a>
+  <a href="#pagesize">page_size &gt; 1 处理</a>
+  <a href="#flow">完整流程</a>
+</nav>
+
+<div class="container">
+
+<!-- ============================================================ -->
+<section id="bg">
+  <h2>背景：EAGLE 投机解码与 Target Verify</h2>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">EAGLE 投机解码流程</div>
+      <div class="flow" style="flex-direction:column; align-items:flex-start; gap:8px;">
+        <div class="flow" style="gap:0">
+          <div class="flow-box highlight">Draft Worker</div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box">生成 topk 候选树</div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box highlight2">num_steps × topk tokens</div>
+        </div>
+        <div style="margin-left:120px; color: var(--text-muted); font-size:0.8rem;">↓ 候选 token 序列</div>
+        <div class="flow" style="gap:0">
+          <div class="flow-box highlight3">Target Worker</div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box">Target Verify</div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box highlight4">验证并接受 tokens</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">topk=1 vs topk>1 的关键区别</div>
+      <table>
+        <tr><th>参数</th><th>topk=1</th><th>topk&gt;1</th></tr>
+        <tr><td>注意力结构</td><td>标准单路径</td><td>树形多路径</td></tr>
+        <tr><td>Attention Mask</td><td>causal mask</td><td>custom_mask (树形)</td></tr>
+        <tr><td>FlashAttn 调用</td><td>1次</td><td><strong>2次 + 合并</strong></td></tr>
+        <tr><td>Metadata</td><td>metadata</td><td>metadata + metadata_expand</td></tr>
+        <tr><td>causal 参数</td><td>True</td><td>False (cascade)</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout info">
+    <strong>核心问题：</strong>当 topk &gt; 1 时，同一 batch 中每个请求有多条候选 token 序列，它们共享相同的 KV Cache 前缀，但每条序列又有自己独立的 draft tokens，且各 draft token 之间的可见性由树形结构的 <code>custom_mask</code> 决定。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="why">
+  <h2>为何需要 Cascade Attention？</h2>
+
+  <p>在 Target Verify 阶段，每个 draft token 需要注意两部分 KV：</p>
+
+  <div class="grid2">
+    <div>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 480 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:480px">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#6c8cff"/>
+            </marker>
+          </defs>
+          <!-- background -->
+          <rect width="480" height="260" fill="#1a1d2e" rx="8"/>
+          <!-- prefix region -->
+          <rect x="20" y="30" width="220" height="60" rx="6" fill="rgba(108,140,255,0.2)" stroke="#6c8cff" stroke-width="1.5"/>
+          <text x="130" y="55" fill="#6c8cff" font-size="12" text-anchor="middle" font-weight="bold">公共前缀 (Prefix KV Cache)</text>
+          <text x="130" y="75" fill="#8890c0" font-size="10" text-anchor="middle">seq_len tokens, 所有 draft 共享</text>
+          <!-- draft region -->
+          <rect x="260" y="30" width="200" height="60" rx="6" fill="rgba(255,108,157,0.2)" stroke="#ff6c9d" stroke-width="1.5"/>
+          <text x="360" y="55" fill="#ff6c9d" font-size="12" text-anchor="middle" font-weight="bold">Draft Tokens (新增)</text>
+          <text x="360" y="75" fill="#8890c0" font-size="10" text-anchor="middle">num_draft tokens, 树形可见</text>
+
+          <!-- query tokens -->
+          <text x="240" y="130" fill="#ffd166" font-size="11" text-anchor="middle" font-weight="bold">Draft Query Tokens (q)</text>
+          <rect x="60" y="140" width="30" height="30" rx="4" fill="rgba(255,209,102,0.3)" stroke="#ffd166"/>
+          <text x="75" y="160" fill="#ffd166" font-size="10" text-anchor="middle">q₀</text>
+          <rect x="100" y="140" width="30" height="30" rx="4" fill="rgba(255,209,102,0.3)" stroke="#ffd166"/>
+          <text x="115" y="160" fill="#ffd166" font-size="10" text-anchor="middle">q₁</text>
+          <rect x="140" y="140" width="30" height="30" rx="4" fill="rgba(255,209,102,0.3)" stroke="#ffd166"/>
+          <text x="155" y="160" fill="#ffd166" font-size="10" text-anchor="middle">q₂</text>
+          <rect x="180" y="140" width="30" height="30" rx="4" fill="rgba(255,209,102,0.3)" stroke="#ffd166"/>
+          <text x="195" y="160" fill="#ffd166" font-size="10" text-anchor="middle">q₃</text>
+          <rect x="220" y="140" width="30" height="30" rx="4" fill="rgba(255,209,102,0.3)" stroke="#ffd166"/>
+          <text x="235" y="160" fill="#ffd166" font-size="10" text-anchor="middle">q₄</text>
+
+          <!-- arrows to prefix -->
+          <line x1="130" y1="140" x2="130" y2="96" stroke="#6c8cff" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+          <text x="90" y="125" fill="#6c8cff" font-size="9">全部注意到</text>
+
+          <!-- arrows to draft (masked) -->
+          <line x1="235" y1="140" x2="310" y2="96" stroke="#ff6c9d" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+          <text x="290" y="130" fill="#ff6c9d" font-size="9">受 mask 限制</text>
+
+          <!-- cascade label -->
+          <rect x="20" y="210" width="200" height="30" rx="6" fill="rgba(108,140,255,0.15)" stroke="#6c8cff"/>
+          <text x="120" y="230" fill="#6c8cff" font-size="11" text-anchor="middle">Stage 1: flash_attn_with_kvcache</text>
+          <rect x="260" y="210" width="200" height="30" rx="6" fill="rgba(255,108,157,0.15)" stroke="#ff6c9d"/>
+          <text x="360" y="230" fill="#ff6c9d" font-size="11" text-anchor="middle">Stage 2: flash_attn_with_kvcache</text>
+        </svg>
+      </div>
+    </div>
+    <div>
+      <h3>为何拆分成两阶段？</h3>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <h4>前缀注意力可批量高效处理</h4>
+            <p>所有 draft token 都可以完整地看到公共前缀，无需特殊 mask，用标准 <code>flash_attn_with_kvcache</code> 即可高效处理。</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num s2">2</div>
+          <div class="step-body">
+            <h4>Draft token 注意力需要 custom_mask</h4>
+            <p>每个 draft query 对其他 draft token 的可见性由树结构决定（<code>custom_mask</code>），FA3 接口不直接支持 custom mask，需要通过重排 page_table + cache_seqlens 来等效实现。</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num s3">3</div>
+          <div class="step-body">
+            <h4>数学等价合并</h4>
+            <p>两次 attention 的输出可以用 <code>merge_state_v2</code> 通过 log-sum-exp 技巧精确合并，等价于在所有 token 上做单次 attention。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <strong>注意：</strong>对 Sliding Window Attention (SWA) 层<strong>不使用</strong> Cascade Attention，因为第一阶段的 cascade 中每个 query 的 window_size 不同，而 FA3 接口不支持传入 window_size 列表。SWA 层有独立的 <code>swa_spec_metadata</code> 处理路径。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="metadata">
+  <h2>Metadata 构建：init_forward_metadata（target_verify 分支）</h2>
+
+  <p>在 <code>init_forward_metadata</code> 的 <code>is_target_verify()</code> + <code>topk &gt; 1</code> 分支中，构建两套 FlashAttentionMetadata：</p>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title" style="color: var(--accent);">metadata — Stage 1（公共前缀注意力）</div>
+      <table>
+        <tr><th>字段</th><th>值</th><th>含义</th></tr>
+        <tr><td><code>cache_seqlens_int32</code></td><td><code>seq_lens</code> [bsz]</td><td>每个请求的原有 KV 序列长度</td></tr>
+        <tr><td><code>max_seq_len_q</code></td><td><code>num_draft_tokens</code></td><td>最大 query 长度</td></tr>
+        <tr><td><code>cu_seqlens_q</code></td><td><code>arange(0, bsz*D+1, step=D)</code></td><td>query 累积长度（每请求 D 个 query）</td></tr>
+        <tr><td><code>cu_seqlens_k</code></td><td><code>cumsum(seq_lens)</code></td><td>key 累积长度</td></tr>
+        <tr><td><code>page_table</code></td><td><code>req_to_token[..., :max_seq_len_k]</code></td><td>指向前缀 KV cache 的页表</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title" style="color: var(--accent2);">metadata_expand — Stage 2（Draft Token 注意力）</div>
+      <table>
+        <tr><th>字段</th><th>值</th><th>含义</th></tr>
+        <tr><td><code>max_seq_len_q</code></td><td>1</td><td>每个虚拟 batch 条目处理 1 个 query</td></tr>
+        <tr><td><code>cu_seqlens_q</code></td><td><code>arange(0, bsz*D+1)</code></td><td>每个 query token 独立为一个 batch 条目</td></tr>
+        <tr><td><code>page_table</code></td><td>经过 mask 重排的页表</td><td>只包含该 query 可见的 draft token</td></tr>
+        <tr><td><code>cache_seqlens_int32</code></td><td><code>mask.sum(dim=1)</code></td><td>每个 query 可见的 draft token 数量</td></tr>
+        <tr><td><code>cu_seqlens_k</code></td><td><code>cumsum(cache_seqlens_int32)</code></td><td>key 累积长度</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <pre><code><span class="cm"># is_target_verify() && topk > 1 分支 (line 522-614)</span>
+<span class="cm"># ── Stage 1 metadata ──────────────────────────────────────</span>
+metadata.cache_seqlens_int32 = forward_batch.seq_lens.<span class="fn">to</span>(torch.int32)         <span class="cm"># [bsz]</span>
+metadata.max_seq_len_q = self.speculative_num_draft_tokens
+metadata.cu_seqlens_q = torch.<span class="fn">arange</span>(<span class="num">0</span>, bsz * D + <span class="num">1</span>, step=D, ...)           <span class="cm"># [bsz+1]</span>
+metadata.cu_seqlens_k = pad(cumsum(metadata.cache_seqlens_int32))              <span class="cm"># [bsz+1]</span>
+metadata.page_table = req_to_token_pool[req_pool_indices, :max_seq_len_k]      <span class="cm"># [bsz, L]</span>
+
+<span class="cm"># ── Stage 2 metadata (metadata_expand) ────────────────────</span>
+metadata_expand.max_seq_len_q = <span class="num">1</span>
+metadata_expand.cu_seqlens_q = torch.<span class="fn">arange</span>(<span class="num">0</span>, bsz * D + <span class="num">1</span>, ...)              <span class="cm"># [bsz*D+1]</span>
+<span class="cm"># ... 构建 mask 并重排 page_table (详见 Custom Mask 处理节)</span>
+metadata_expand.page_table = non_masked_page_table.<span class="fn">gather</span>(<span class="num">1</span>, sort_order)       <span class="cm"># [bsz*D, D]</span>
+metadata_expand.cache_seqlens_int32 = mask.<span class="fn">sum</span>(dim=<span class="num">1</span>).<span class="fn">to</span>(torch.int32)          <span class="cm"># [bsz*D]</span>
+self.forward_metadata_spec_decode_expand = metadata_expand</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="mask">
+  <h2>Custom Mask 处理：构建 expand 页表</h2>
+
+  <p>这是整个设计中最精妙的部分：如何在不修改 FA3 接口的情况下，用 custom_mask 控制哪些 draft token 对哪些 query 可见。</p>
+
+  <div class="card">
+    <div class="card-title">核心思路：用 page_table 重排替代 custom_mask</div>
+    <p style="font-size:0.88rem; margin-top:8px;">FA3 的 <code>flash_attn_with_kvcache</code> 通过 <code>cache_seqlens_int32[i]</code> 决定第 i 个 batch 条目读取 <code>page_table[i]</code> 的前多少个 page。利用这一机制：将可见的 draft token page 放前面，不可见的放后面，<code>cache_seqlens_int32</code> 设为可见数量，FA3 自然只会读可见部分。</p>
+  </div>
+
+  <h3>Step-by-step 代码解析</h3>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h4>提取每个 query token 的 mask 行（line 555-580）</h4>
+        <pre><code><span class="cm"># offsets: draft token 在 KV cache 中的位置偏移</span>
+offsets = torch.<span class="fn">arange</span>(D, device=device).<span class="fn">unsqueeze</span>(<span class="num">0</span>)  <span class="cm"># (1, D)</span>
+<span class="cm"># cols: 每个请求的 draft token 在 page pool 中的列索引</span>
+cols = offsets.<span class="fn">expand</span>(bsz, -<span class="num">1</span>) + forward_batch.seq_lens.<span class="fn">unsqueeze</span>(<span class="num">1</span>)  <span class="cm"># (bsz, D)</span>
+
+<span class="cm"># 从 custom_mask 中提取对应行 (考虑到 causal 结构的偏移)</span>
+cum_len = pad(cumsum((seq_lens + D).<span class="fn">repeat_interleave</span>(D)))[:-<span class="num">1</span>]
+mask_extraction_indices = (cols.<span class="fn">repeat_interleave</span>(D, dim=<span class="num">0</span>) + cum_len[:, <span class="cl">None</span>]).<span class="fn">view</span>(<span class="num">1</span>, -<span class="num">1</span>)
+mask = forward_batch.spec_info.custom_mask[mask_extraction_indices].<span class="fn">view</span>(-<span class="num">1</span>, D)
+<span class="cm"># mask shape: (bsz * D, D) — 第 i 行表示第 i 个 query 对 D 个 draft token 的可见性</span></code></pre>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num s2">2</div>
+      <div class="step-body">
+        <h4>构造 non_masked_page_table（line 590-605）</h4>
+        <pre><code><span class="cm"># 获取每个请求的 draft token 对应的 KV cache slot indices</span>
+non_masked_page_table = (
+    req_to_token_pool[req_pool_indices, :]
+    .<span class="fn">gather</span>(<span class="num">1</span>, cols)                              <span class="cm"># (bsz, D)：draft token 的 slot</span>
+    .<span class="fn">repeat_interleave</span>(D, dim=<span class="num">0</span>)                  <span class="cm"># (bsz*D, D)：每个 query 复制一份</span>
+)</code></pre>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num s3">3</div>
+      <div class="step-body">
+        <h4>按 mask 排序：将可见 token 移到前面（line 590-606）</h4>
+        <pre><code><span class="cm"># col_indices: 每列的原始索引 (0, 1, 2, ..., D-1)</span>
+col_indices = offsets.<span class="fn">expand</span>(mask.shape[<span class="num">0</span>], D)  <span class="cm"># (bsz*D, D)</span>
+
+<span class="cm"># 构建排序键：可见=原始索引（小）, 不可见=原始索引+D（大）</span>
+<span class="cm"># 这使 torch.sort 把可见 token 排在前面</span>
+keys = torch.<span class="fn">where</span>(mask, col_indices, col_indices + D)
+_, sort_order = torch.<span class="fn">sort</span>(keys, dim=<span class="num">1</span>)
+
+<span class="cm"># 重排 page_table 行，使可见 token 的 slot 在前</span>
+metadata_expand.page_table = non_masked_page_table.<span class="fn">gather</span>(<span class="num">1</span>, sort_order)  <span class="cm"># (bsz*D, D)</span>
+metadata_expand.cache_seqlens_int32 = mask.<span class="fn">sum</span>(dim=<span class="num">1</span>).<span class="fn">to</span>(torch.int32)     <span class="cm"># (bsz*D,)</span></code></pre>
+      </div>
+    </div>
+  </div>
+
+  <h3>可视化：mask 重排示意（bsz=1, D=3）</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:720px">
+      <rect width="720" height="230" fill="#0d1117" rx="8"/>
+      <!-- title row -->
+      <text x="130" y="25" fill="#8890c0" font-size="11" text-anchor="middle">non_masked_page_table</text>
+      <text x="350" y="25" fill="#8890c0" font-size="11" text-anchor="middle">custom_mask (float→bool)</text>
+      <text x="570" y="25" fill="#8890c0" font-size="11" text-anchor="middle">sorted page_table (cache_seqlens=[1,2,2])</text>
+
+      <!-- labels -->
+      <text x="30" y="65" fill="#ffd166" font-size="10">q₀→</text>
+      <text x="30" y="105" fill="#ffd166" font-size="10">q₁→</text>
+      <text x="30" y="145" fill="#ffd166" font-size="10">q₂→</text>
+
+      <!-- non_masked_page_table -->
+      <rect x="55" y="50" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="71" y="69" fill="#6c8cff" font-size="10" text-anchor="middle">s8</text>
+      <rect x="91" y="50" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="107" y="69" fill="#6c8cff" font-size="10" text-anchor="middle">s9</text>
+      <rect x="127" y="50" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="143" y="69" fill="#6c8cff" font-size="10" text-anchor="middle">s10</text>
+
+      <rect x="55" y="90" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="71" y="109" fill="#6c8cff" font-size="10" text-anchor="middle">s8</text>
+      <rect x="91" y="90" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="107" y="109" fill="#6c8cff" font-size="10" text-anchor="middle">s9</text>
+      <rect x="127" y="90" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="143" y="109" fill="#6c8cff" font-size="10" text-anchor="middle">s10</text>
+
+      <rect x="55" y="130" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="71" y="149" fill="#6c8cff" font-size="10" text-anchor="middle">s8</text>
+      <rect x="91" y="130" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="107" y="149" fill="#6c8cff" font-size="10" text-anchor="middle">s9</text>
+      <rect x="127" y="130" width="32" height="28" rx="4" fill="rgba(108,140,255,0.3)" stroke="#6c8cff"/>
+      <text x="143" y="149" fill="#6c8cff" font-size="10" text-anchor="middle">s10</text>
+
+      <!-- mask -->
+      <rect x="270" y="50" width="28" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="284" y="69" fill="#6cffb8" font-size="10" text-anchor="middle">1</text>
+      <rect x="302" y="50" width="28" height="28" rx="4" fill="rgba(80,80,80,0.3)" stroke="#555"/>
+      <text x="316" y="69" fill="#555" font-size="10" text-anchor="middle">0</text>
+      <rect x="334" y="50" width="28" height="28" rx="4" fill="rgba(80,80,80,0.3)" stroke="#555"/>
+      <text x="348" y="69" fill="#555" font-size="10" text-anchor="middle">0</text>
+
+      <rect x="270" y="90" width="28" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="284" y="109" fill="#6cffb8" font-size="10" text-anchor="middle">1</text>
+      <rect x="302" y="90" width="28" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="316" y="109" fill="#6cffb8" font-size="10" text-anchor="middle">1</text>
+      <rect x="334" y="90" width="28" height="28" rx="4" fill="rgba(80,80,80,0.3)" stroke="#555"/>
+      <text x="348" y="109" fill="#555" font-size="10" text-anchor="middle">0</text>
+
+      <rect x="270" y="130" width="28" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="284" y="149" fill="#6cffb8" font-size="10" text-anchor="middle">1</text>
+      <rect x="302" y="130" width="28" height="28" rx="4" fill="rgba(80,80,80,0.3)" stroke="#555"/>
+      <text x="316" y="149" fill="#555" font-size="10" text-anchor="middle">0</text>
+      <rect x="334" y="130" width="28" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="348" y="149" fill="#6cffb8" font-size="10" text-anchor="middle">1</text>
+
+      <!-- arrows -->
+      <text x="385" y="105" fill="#ffd166" font-size="18" text-anchor="middle">→</text>
+      <text x="385" y="120" fill="#8890c0" font-size="9" text-anchor="middle">sort</text>
+
+      <!-- sorted page_table -->
+      <!-- q0: seqlen=1, only s8 valid -->
+      <rect x="410" y="50" width="32" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="426" y="69" fill="#6cffb8" font-size="10" text-anchor="middle">s8</text>
+      <rect x="446" y="50" width="32" height="28" rx="4" fill="rgba(80,80,80,0.15)" stroke="#333"/>
+      <text x="462" y="69" fill="#444" font-size="10" text-anchor="middle">s9</text>
+      <rect x="482" y="50" width="32" height="28" rx="4" fill="rgba(80,80,80,0.15)" stroke="#333"/>
+      <text x="498" y="69" fill="#444" font-size="10" text-anchor="middle">s10</text>
+      <text x="530" y="69" fill="#ffd166" font-size="10">← seqlen=1</text>
+
+      <!-- q1: seqlen=2, s8 s9 valid -->
+      <rect x="410" y="90" width="32" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="426" y="109" fill="#6cffb8" font-size="10" text-anchor="middle">s8</text>
+      <rect x="446" y="90" width="32" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="462" y="109" fill="#6cffb8" font-size="10" text-anchor="middle">s9</text>
+      <rect x="482" y="90" width="32" height="28" rx="4" fill="rgba(80,80,80,0.15)" stroke="#333"/>
+      <text x="498" y="109" fill="#444" font-size="10" text-anchor="middle">s10</text>
+      <text x="530" y="109" fill="#ffd166" font-size="10">← seqlen=2</text>
+
+      <!-- q2: seqlen=2, s8 s10 valid -->
+      <rect x="410" y="130" width="32" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="426" y="149" fill="#6cffb8" font-size="10" text-anchor="middle">s8</text>
+      <rect x="446" y="130" width="32" height="28" rx="4" fill="rgba(108,255,184,0.4)" stroke="#6cffb8"/>
+      <text x="462" y="149" fill="#6cffb8" font-size="10" text-anchor="middle">s10</text>
+      <rect x="482" y="130" width="32" height="28" rx="4" fill="rgba(80,80,80,0.15)" stroke="#333"/>
+      <text x="498" y="149" fill="#444" font-size="10" text-anchor="middle">s9</text>
+      <text x="530" y="149" fill="#ffd166" font-size="10">← seqlen=2</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="attn1">
+  <h2>Stage 1：公共前缀注意力（flash_attn_with_kvcache 第一次调用）</h2>
+
+  <pre><code><span class="cm"># forward_extend line 881-899</span>
+result = <span class="fn">flash_attn_with_kvcache</span>(
+    q=q.<span class="fn">contiguous</span>().<span class="fn">view</span>(-<span class="num">1</span>, tp_q_head_num, head_dim),   <span class="cm"># (bsz*D, H, d)</span>
+    k_cache=key_cache,       <span class="cm"># (-1, page_size, tp_k_head_num, head_dim)</span>
+    v_cache=value_cache,     <span class="cm"># (-1, page_size, tp_v_head_num, v_head_dim)</span>
+    page_table=metadata.page_table,              <span class="cm"># [bsz, max_prefix_pages]</span>
+    cache_seqlens=metadata.cache_seqlens_int32,  <span class="cm"># [bsz] = seq_lens（前缀长度）</span>
+    cu_seqlens_q=metadata.cu_seqlens_q,          <span class="cm"># [bsz+1] step=D</span>
+    cu_seqlens_k_new=metadata.cu_seqlens_k,      <span class="cm"># [bsz+1]</span>
+    max_seqlen_q=metadata.max_seq_len_q,         <span class="cm"># D</span>
+    softmax_scale=layer.scaling,
+    causal=<span class="cl">False</span>,    <span class="cm"># ★ 非 causal！所有 draft token 可以完整看到前缀</span>
+    window_size=window_size,
+    return_softmax_lse=<span class="cl">True</span>,   <span class="cm"># ★ 必须返回 LSE 用于后续 merge</span>
+    num_splits=self.num_splits,
+)
+o, softmax_lse, *rest = result
+<span class="cm"># o shape: (bsz*D, H, v_head_dim)</span>
+<span class="cm"># softmax_lse shape: (H, bsz*D) 或 (bsz*D, H) 取决于 FA 版本</span></code></pre>
+
+  <div class="callout info">
+    <strong>为什么 causal=False？</strong>在 Target Verify 场景，draft token（query）想要看到的是整个前缀 KV，前缀 KV 全部在时间上早于 draft token，因此不需要 causal mask。若用 causal=True，排序在后面的 draft query 会因为 causal 规则无法看到更早位置的前缀 KV，导致结果错误。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="attn2">
+  <h2>Stage 2：Draft Token 注意力（flash_attn_with_kvcache 第二次调用）</h2>
+
+  <p>Stage 2 使用 <code>forward_metadata_spec_decode_expand</code>，它把每个 draft query token 视为独立的 batch 条目（max_seqlen_q=1），并通过重排好的 page_table 实现 custom mask 效果。</p>
+
+  <pre><code><span class="cm"># forward_extend line 903-932 (非 MLA 路径)</span>
+o_expand, softmax_lse_expand, *rest_expand = <span class="fn">flash_attn_with_kvcache</span>(
+    q=q.<span class="fn">contiguous</span>().<span class="fn">view</span>(-<span class="num">1</span>, tp_q_head_num, head_dim),
+    <span class="cm"># ★ page_size=1 视角：每个 slot 都是独立的 page</span>
+    k_cache=key_cache.<span class="fn">view</span>(-<span class="num">1</span>, <span class="num">1</span>, tp_k_head_num, head_dim),
+    v_cache=value_cache.<span class="fn">view</span>(-<span class="num">1</span>, <span class="num">1</span>, tp_v_head_num, v_head_dim),
+    page_table=metadata_expand.page_table,              <span class="cm"># (bsz*D, D) 已重排</span>
+    cache_seqlens=metadata_expand.cache_seqlens_int32,  <span class="cm"># (bsz*D,) = mask 行之和</span>
+    cu_seqlens_q=metadata_expand.cu_seqlens_q,          <span class="cm"># (bsz*D+1,) 每条目1个query</span>
+    cu_seqlens_k_new=metadata_expand.cu_seqlens_k,      <span class="cm"># (bsz*D+1,)</span>
+    max_seqlen_q=metadata_expand.max_seq_len_q,         <span class="cm"># = 1</span>
+    softmax_scale=layer.scaling,
+    causal=<span class="cl">False</span>,   <span class="cm"># ★ 非 causal（mask 已经编码在 page_table 中）</span>
+    return_softmax_lse=<span class="cl">True</span>,
+    num_splits=self.num_splits,
+)
+<span class="cm"># o_expand shape: (bsz*D, H, v_head_dim)</span></code></pre>
+
+  <div class="callout warn">
+    <strong>关键设计：k_cache 的 view 变换</strong><br>
+    Stage 2 中 <code>k_cache.view(-1, 1, ...)</code> 将 page_size 维度折叠掉，把每个 KV slot 当作一个独立的 page（page_size=1）。这样 <code>page_table</code> 中存的直接是 slot 的绝对索引（不需要除以 page_size），可以精确地逐 token 控制 KV 访问，从而实现 custom mask 的效果。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="merge">
+  <h2>merge_state_v2：合并两阶段注意力输出</h2>
+
+  <p>FlashAttention 的 online softmax 算法维护两个量：输出 <code>o</code> 和 log-sum-exp <code>lse</code>。</p>
+
+  <div class="card">
+    <div class="card-title">数学原理</div>
+    <p style="margin-top:8px; font-size:0.88rem;">设 Stage 1 的结果为 (o₁, lse₁)，Stage 2 的结果为 (o₂, lse₂)，则合并后：</p>
+    <pre style="margin-top:12px"><code><span class="cm"># lse = log(sum_of_exp_scores)</span>
+<span class="cm"># o = (sum_of_exp_scores * v) / sum_of_exp_scores</span>
+
+lse_merged = log(exp(lse₁) + exp(lse₂))
+           = lse₁ + log(1 + exp(lse₂ - lse₁))  <span class="cm"># 数值稳定版本</span>
+
+w₁ = exp(lse₁) / (exp(lse₁) + exp(lse₂))
+w₂ = exp(lse₂) / (exp(lse₁) + exp(lse₂))
+
+o_merged = w₁ * o₁ + w₂ * o₂</code></pre>
+  </div>
+
+  <pre><code><span class="cm"># forward_extend line 927-932</span>
+<span class="cm"># softmax_lse shape: (H, bsz*D) → 转置为 (bsz*D, H) 以匹配 merge_state_v2 的期望</span>
+o, _ = <span class="fn">merge_state_v2_wrapper</span>(
+    o,                                   <span class="cm"># Stage 1 output (bsz*D, H, v_head_dim)</span>
+    softmax_lse.<span class="fn">T</span>.<span class="fn">contiguous</span>(),          <span class="cm"># Stage 1 lse (bsz*D, H)</span>
+    o_expand,                            <span class="cm"># Stage 2 output (bsz*D, H, v_head_dim)</span>
+    softmax_lse_expand.<span class="fn">T</span>.<span class="fn">contiguous</span>(),   <span class="cm"># Stage 2 lse (bsz*D, H)</span>
+)
+<span class="cm"># merge_state_v2_wrapper 有 @torch._dynamo.disable() 装饰器</span>
+<span class="cm"># 因为 merge_state_v2 有 torch.compile 兼容性问题</span></code></pre>
+
+  <div class="merge-row">
+    <div class="merge-box a">Stage 1 Output<br><small>(o, lse)</small><br><small>prefix attention</small></div>
+    <div class="op">⊕</div>
+    <div class="merge-box b">Stage 2 Output<br><small>(o_expand, lse_expand)</small><br><small>draft token attention</small></div>
+    <div class="op">→</div>
+    <div class="merge-box c">Merged Output<br><small>(o_merged)</small><br><small>完整注意力结果</small></div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="swa">
+  <h2>SWA 层特殊处理：_init_sliding_window_attn_spec_metadata</h2>
+
+  <p>对于 Sliding Window Attention 层，cascade attention 不适用。代码通过 <code>_init_sliding_window_attn_spec_metadata</code> 将前缀和 draft tokens 合并成单一序列。</p>
+
+  <div class="callout warn">
+    <strong>不用 cascade 的原因（注释 line 808-810）：</strong><br>
+    第一阶段 cascade attention 中，每个 q 的 window_size 是不同的（取决于位置），但 FA3 接口不支持传入 window_size 列表。此外，SWA 层的 seq_len ≤ window_size，重复计算公共前缀的开销也很小，可以直接展开处理。
+  </div>
+
+  <div class="grid2">
+    <div>
+      <h3>构建合并页表的流程</h3>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <h4>合并 cache_seqlens</h4>
+            <pre><code>cache_seqlens = (
+    metadata.cache_seqlens_int32  <span class="cm"># [bsz] 前缀长度</span>
+      .repeat_interleave(D)       <span class="cm"># [bsz*D]</span>
+    + metadata_expand.cache_seqlens_int32  <span class="cm"># [bsz*D] draft 可见数</span>
+)</code></pre>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num s2">2</div>
+          <div class="step-body">
+            <h4>用 Triton kernel 拼接页表</h4>
+            <pre><code><span class="fn">prepare_swa_spec_page_table_triton</span>(
+    page_table_dst,   <span class="cm"># 输出 [bsz*D, L_prefix+D]</span>
+    metadata.page_table,         <span class="cm"># 前缀页表 [bsz, L_prefix]</span>
+    metadata_expand.page_table,  <span class="cm"># draft 页表 [bsz*D, D]</span>
+    metadata.cache_seqlens_int32,
+    metadata_expand.cache_seqlens_int32,
+    speculative_num_draft_tokens=D,
+)</code></pre>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num s3">3</div>
+          <div class="step-body">
+            <h4>写入 swa_spec_metadata</h4>
+            <p>将合并后的 metadata 存入 <code>metadata.swa_spec_metadata</code>，供 SWA 层的 forward_extend 路径使用（<code>is_swa_layer and metadata.swa_spec_metadata is not None</code> 分支）。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <h3>Triton Kernel：_prepare_swa_spec_page_table_kernel</h3>
+      <p>该 kernel 并行地将 page_table_a（前缀）和 page_table_b（expand draft）拼接到 page_table_dst 中，每个 output row 对应一个 (query_idx) 的组合序列。</p>
+      <pre><code><span class="cm"># grid: (bsz*D, ceil(LEN_OUT/BLOCK_N))</span>
+<span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">_prepare_swa_spec_page_table_kernel</span>(...):
+    pid_m = tl.program_id(<span class="num">0</span>)  <span class="cm"># 对应 bsz*D 中的第几个</span>
+    idx_a = pid_m // REPEAT_STEP   <span class="cm"># 对应哪个原始请求</span>
+    idx_b = pid_m                  <span class="cm"># 对应 expand 的哪行</span>
+
+    <span class="cm"># 分三段写入: 纯A段 / 纯B段 / 混合边界段</span>
+    <span class="kw">if</span> offs_n &lt; seq_len_a:   <span class="cm"># 写前缀 token page 索引</span>
+    <span class="kw">elif</span> offs_n &gt;= seq_len_a:  <span class="cm"># 写 draft token page 索引</span>
+    <span class="kw">else</span>:  <span class="cm"># 混合处理边界</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="pagesize">
+  <h2>page_size &gt; 1 时的额外处理（Draft Decode）</h2>
+
+  <p>当 <code>page_size &gt; 1</code> 时，KV cache 按 page 分配，需要额外调整 cascade attention 的两个 metadata，以确保 Stage 1 不跨页混读，Stage 2 处理页内的尾部 token。</p>
+
+  <div class="callout info">
+    <strong>问题：</strong>KV cache 的最后一个 page 可能只有部分被填满（<code>last_page_lens = seq_lens % page_size</code>）。Stage 1 使用 strided page table，必须对齐到 page 边界；Stage 2 需要处理最后 page 中剩余的 <code>last_page_len</code> 个 token。
+  </div>
+
+  <pre><code><span class="cm"># init_forward_metadata line 701-731 (page_size > 1 && topk > 1 && draft_decode)</span>
+last_page_lens = forward_batch.seq_lens % self.page_size  <span class="cm"># [bsz]</span>
+
+<span class="cm"># Stage 1: 减去最后不完整页中的 token，对齐 page 边界</span>
+metadata.cache_seqlens_int32 -= last_page_lens  <span class="cm"># [bsz]</span>
+
+<span class="cm"># Stage 2: 加上最后页中剩余的 token</span>
+expanded_last_page_lens = last_page_lens.<span class="fn">repeat_interleave</span>(topk)
+metadata_expand.cache_seqlens_int32 += expanded_last_page_lens
+
+<span class="cm"># 构建 Stage 2 专用的 expand_page_table</span>
+<span class="cm"># shape: [bs*topk, speculative_num_steps]</span>
+expand_page_table = torch.<span class="fn">zeros</span>(bsz * topk, num_steps, ...)
+<span class="fn">draft_decode_set_expand_metadata</span>(
+    cache_seqlens_int32=metadata_expand.cache_seqlens_int32,
+    page_table=expand_page_table,
+    last_page_lens=last_page_lens,
+    decode_length=decode_length,    <span class="cm"># = speculative_step_id + 1</span>
+    cache_loc=cache_loc,            <span class="cm"># [bs*topk, num_steps] 新分配的 token slot</span>
+    topk=topk, page_size=page_size,
+)</code></pre>
+
+  <div class="card">
+    <div class="card-title">draft_decode_set_expand_metadata 的实现（line 2638）</div>
+    <pre><code><span class="cm"># 将新分配的 cache_loc 中重复 page 索引去重，填入 expand_page_table</span>
+cache_seqlens_int32.copy_(decode_length + expanded_last_page_lens)
+cache_loc_pages = (cache_loc // page_size).<span class="fn">to</span>(torch.int32)
+<span class="cm"># 向量化 unique_consecutive: 找到变化点</span>
+mask = torch.ones_like(cache_loc_pages, dtype=torch.bool)
+mask[:, <span class="num">1</span>:] = cache_loc_pages[:, <span class="num">1</span>:] != cache_loc_pages[:, :-<span class="num">1</span>]
+positions = mask.cumsum(dim=<span class="num">1</span>) - <span class="num">1</span>
+<span class="cm"># scatter 去重后的 page 索引</span>
+page_table[:num_seqs, :].scatter_(<span class="num">1</span>, positions, cache_loc_pages)</code></pre>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="flow">
+  <h2>完整执行流程图</h2>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 840 700" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:840px">
+      <defs>
+        <marker id="a2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#6c8cff"/>
+        </marker>
+        <marker id="a3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#6cffb8"/>
+        </marker>
+        <marker id="a4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#ffd166"/>
+        </marker>
+        <marker id="a5" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#ff6c9d"/>
+        </marker>
+      </defs>
+      <rect width="840" height="700" fill="#0d1117" rx="8"/>
+
+      <!-- init_forward_metadata -->
+      <rect x="250" y="20" width="320" height="48" rx="8" fill="rgba(108,140,255,0.2)" stroke="#6c8cff" stroke-width="1.5"/>
+      <text x="410" y="42" fill="#6c8cff" font-size="13" text-anchor="middle" font-weight="bold">init_forward_metadata</text>
+      <text x="410" y="58" fill="#8890c0" font-size="10" text-anchor="middle">forward_mode.is_target_verify() &amp;&amp; topk &gt; 1</text>
+
+      <!-- arrow down -->
+      <line x1="410" y1="68" x2="410" y2="90" stroke="#6c8cff" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- Build metadata box -->
+      <rect x="60" y="90" width="240" height="70" rx="8" fill="rgba(108,140,255,0.15)" stroke="#6c8cff"/>
+      <text x="180" y="112" fill="#6c8cff" font-size="11" text-anchor="middle" font-weight="bold">构建 metadata (Stage 1)</text>
+      <text x="180" y="128" fill="#8890c0" font-size="9" text-anchor="middle">cache_seqlens = seq_lens [bsz]</text>
+      <text x="180" y="142" fill="#8890c0" font-size="9" text-anchor="middle">cu_seqlens_q: step=D, page_table: prefix</text>
+
+      <!-- Build metadata_expand box -->
+      <rect x="520" y="90" width="260" height="70" rx="8" fill="rgba(255,108,157,0.15)" stroke="#ff6c9d"/>
+      <text x="650" y="112" fill="#ff6c9d" font-size="11" text-anchor="middle" font-weight="bold">构建 metadata_expand (Stage 2)</text>
+      <text x="650" y="128" fill="#8890c0" font-size="9" text-anchor="middle">custom_mask → sort → page_table reorder</text>
+      <text x="650" y="142" fill="#8890c0" font-size="9" text-anchor="middle">cache_seqlens = mask.sum(dim=1)</text>
+
+      <line x1="300" y1="68" x2="180" y2="90" stroke="#6c8cff" stroke-width="1.2" marker-end="url(#a2)"/>
+      <line x1="510" y1="68" x2="650" y2="90" stroke="#ff6c9d" stroke-width="1.2" marker-end="url(#a5)"/>
+
+      <!-- SWA branch -->
+      <rect x="310" y="90" width="200" height="70" rx="8" fill="rgba(108,255,184,0.1)" stroke="#6cffb8"/>
+      <text x="410" y="112" fill="#6cffb8" font-size="11" text-anchor="middle" font-weight="bold">SWA 层？→ swa_spec_metadata</text>
+      <text x="410" y="128" fill="#8890c0" font-size="9" text-anchor="middle">concat prefix + draft page_table</text>
+      <text x="410" y="142" fill="#8890c0" font-size="9" text-anchor="middle">via Triton kernel</text>
+
+      <!-- arrow to forward -->
+      <line x1="180" y1="160" x2="280" y2="200" stroke="#6c8cff" stroke-width="1.2" marker-end="url(#a2)"/>
+      <line x1="650" y1="160" x2="540" y2="200" stroke="#ff6c9d" stroke-width="1.2" marker-end="url(#a5)"/>
+
+      <!-- forward_extend -->
+      <rect x="200" y="200" width="420" height="50" rx="8" fill="rgba(255,209,102,0.15)" stroke="#ffd166" stroke-width="1.5"/>
+      <text x="410" y="222" fill="#ffd166" font-size="13" text-anchor="middle" font-weight="bold">forward_extend / forward_decode</text>
+      <text x="410" y="240" fill="#8890c0" font-size="10" text-anchor="middle">use_cascade_attn = True (topk&gt;1 &amp;&amp; target_verify &amp;&amp; !swa_layer)</text>
+
+      <line x1="410" y1="250" x2="410" y2="272" stroke="#ffd166" stroke-width="1.5" marker-end="url(#a4)"/>
+
+      <!-- Stage 1 call -->
+      <rect x="60" y="272" width="330" height="80" rx="8" fill="rgba(108,140,255,0.18)" stroke="#6c8cff"/>
+      <text x="225" y="296" fill="#6c8cff" font-size="12" text-anchor="middle" font-weight="bold">Stage 1: flash_attn_with_kvcache</text>
+      <text x="225" y="312" fill="#8890c0" font-size="9" text-anchor="middle">page_table=metadata.page_table (prefix)</text>
+      <text x="225" y="326" fill="#8890c0" font-size="9" text-anchor="middle">causal=False, return_softmax_lse=True</text>
+      <text x="225" y="340" fill="#6cffb8" font-size="9" text-anchor="middle">→ (o, softmax_lse)</text>
+
+      <!-- Stage 2 call -->
+      <rect x="450" y="272" width="330" height="80" rx="8" fill="rgba(255,108,157,0.18)" stroke="#ff6c9d"/>
+      <text x="615" y="296" fill="#ff6c9d" font-size="12" text-anchor="middle" font-weight="bold">Stage 2: flash_attn_with_kvcache</text>
+      <text x="615" y="312" fill="#8890c0" font-size="9" text-anchor="middle">page_table=metadata_expand.page_table</text>
+      <text x="615" y="326" fill="#8890c0" font-size="9" text-anchor="middle">k_cache.view(-1,1,...), causal=False</text>
+      <text x="615" y="340" fill="#6cffb8" font-size="9" text-anchor="middle">→ (o_expand, softmax_lse_expand)</text>
+
+      <line x1="310" y1="272" x2="225" y2="272" stroke="#6c8cff" stroke-width="1" stroke-dasharray="3,2"/>
+      <line x1="510" y1="272" x2="615" y2="272" stroke="#ff6c9d" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <!-- arrows down to merge -->
+      <line x1="225" y1="352" x2="340" y2="400" stroke="#6c8cff" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="615" y1="352" x2="480" y2="400" stroke="#ff6c9d" stroke-width="1.5" marker-end="url(#a5)"/>
+
+      <!-- merge box -->
+      <rect x="250" y="400" width="310" height="70" rx="8" fill="rgba(108,255,184,0.18)" stroke="#6cffb8" stroke-width="1.5"/>
+      <text x="405" y="425" fill="#6cffb8" font-size="13" text-anchor="middle" font-weight="bold">merge_state_v2</text>
+      <text x="405" y="442" fill="#8890c0" font-size="9" text-anchor="middle">(o, lse.T) ⊕ (o_expand, lse_expand.T)</text>
+      <text x="405" y="458" fill="#8890c0" font-size="9" text-anchor="middle">数学等价于全局单次 attention</text>
+
+      <!-- formula -->
+      <rect x="150" y="500" width="500" height="60" rx="8" fill="rgba(255,209,102,0.1)" stroke="#ffd166"/>
+      <text x="400" y="522" fill="#ffd166" font-size="11" text-anchor="middle" font-weight="bold">数学等价性：</text>
+      <text x="400" y="540" fill="#8890c0" font-size="10" text-anchor="middle">o = (exp(lse₁)·o₁ + exp(lse₂)·o₂) / (exp(lse₁) + exp(lse₂))</text>
+      <text x="400" y="556" fill="#8890c0" font-size="9" text-anchor="middle">= Attention(Q, [K_prefix; K_draft_visible], [V_prefix; V_draft_visible])</text>
+
+      <line x1="405" y1="470" x2="405" y2="500" stroke="#6cffb8" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- final output -->
+      <rect x="300" y="590" width="210" height="46" rx="8" fill="rgba(108,140,255,0.25)" stroke="#6c8cff" stroke-width="1.5"/>
+      <text x="405" y="613" fill="#6c8cff" font-size="12" text-anchor="middle" font-weight="bold">最终输出 o</text>
+      <text x="405" y="628" fill="#8890c0" font-size="10" text-anchor="middle">view(-1, tp_q_head_num * v_head_dim)</text>
+      <line x1="405" y1="560" x2="405" y2="590" stroke="#6c8cff" stroke-width="1.5" marker-end="url(#a2)"/>
+    </svg>
+  </div>
+
+  <h3>关键代码路径总结</h3>
+  <table>
+    <tr><th>位置</th><th>函数</th><th>作用</th></tr>
+    <tr><td>line 522–614</td><td><code>init_forward_metadata</code></td><td>构建 metadata 和 metadata_expand，处理 custom_mask</td></tr>
+    <tr><td>line 616–619</td><td><code>_init_sliding_window_attn_spec_metadata</code></td><td>SWA 层独立路径，拼接页表</td></tr>
+    <tr><td>line 695–731</td><td><code>init_forward_metadata</code>（page_size&gt;1）</td><td>对齐 page 边界，调用 draft_decode_set_expand_metadata</td></tr>
+    <tr><td>line 807–815</td><td><code>forward_extend</code>（use_cascade_attn 判断）</td><td>决定是否使用 cascade：topk&gt;1 且非 SWA 层</td></tr>
+    <tr><td>line 881–932</td><td><code>forward_extend</code>（cascade 调用）</td><td>Stage 1 + Stage 2 flash_attn + merge_state_v2</td></tr>
+    <tr><td>line 1121</td><td><code>forward_decode</code></td><td>DRAFT_DECODE 同样路径</td></tr>
+    <tr><td>line 2437–2536</td><td><code>_prepare_swa_spec_page_table_kernel</code></td><td>Triton kernel，拼接 SWA 页表</td></tr>
+    <tr><td>line 2638–2657</td><td><code>draft_decode_set_expand_metadata</code></td><td>page_size&gt;1 时构建 expand_page_table（去重 page 索引）</td></tr>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <h2>设计亮点总结</h2>
+  <div class="grid3">
+    <div class="card">
+      <div class="card-title">无侵入式 custom mask</div>
+      <p>通过重排 page_table + 设置 cache_seqlens，在不修改 FA3 接口的前提下实现了任意 custom mask，兼容性好。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">数学精确的分块合并</div>
+      <p>使用 online softmax 的 merge_state_v2，两阶段结果的合并在数学上等价于单次全局 attention，不损失精度。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">SWA/普通层分治</div>
+      <p>SWA 层因 window_size 限制走独立路径（合并序列单次 attention），普通层走 cascade 路径，充分利用各场景优势。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">page_size 对齐</div>
+      <p>page_size&gt;1 时通过拆分最后不完整页到 Stage 2，保证 Stage 1 严格对齐 page 边界，避免 KV cache 读取越界。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">CUDA Graph 兼容</div>
+      <p>metadata 在 init_replay_cuda_graph 中用 copy_ 更新，避免动态内存分配，保证 CUDA Graph 的 replay 正确性。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">torch.compile 防护</div>
+      <p>merge_state_v2 通过 @torch._dynamo.disable() 包装，规避已知的 torch.compile 兼容性问题。</p>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<footer style="border-top:1px solid var(--border); padding:24px 40px; text-align:center; color: var(--text-muted); font-size:0.8rem;">
+  SGLang FlashAttention Backend — Cascade Attention Analysis &nbsp;|&nbsp; Source: <code>python/sglang/srt/layers/attention/flashattention_backend.py</code>
+</footer>
+
+</body>
+</html>
