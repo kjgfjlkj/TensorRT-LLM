@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>EPLB 权重更新 & GPU 推理依赖图</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Consolas', 'Courier New', monospace; background: #0d1117; color: #e6edf3; }
+
+.page-title {
+  text-align: center;
+  padding: 20px;
+  font-size: 20px;
+  font-weight: bold;
+  color: #58a6ff;
+  border-bottom: 1px solid #30363d;
+  background: #161b22;
+}
+.page-subtitle {
+  text-align: center;
+  font-size: 12px;
+  color: #8b949e;
+  padding: 6px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.layout {
+  display: flex;
+  gap: 0;
+  height: calc(100vh - 80px);
+  overflow: hidden;
+}
+
+/* ===== LEFT PANEL: Weight Update ===== */
+.panel-weight {
+  width: 340px;
+  min-width: 340px;
+  background: #161b22;
+  border-right: 2px solid #30363d;
+  overflow-y: auto;
+  padding: 16px 12px;
+}
+
+/* ===== CENTER PANEL: Timeline ===== */
+.panel-timeline {
+  flex: 1;
+  background: #0d1117;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* ===== RIGHT PANEL: GPU Inference ===== */
+.panel-inference {
+  width: 340px;
+  min-width: 340px;
+  background: #161b22;
+  border-left: 2px solid #30363d;
+  overflow-y: auto;
+  padding: 16px 12px;
+}
+
+/* Panel headers */
+.panel-header {
+  font-size: 13px;
+  font-weight: bold;
+  text-align: center;
+  padding: 8px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  letter-spacing: 0.5px;
+}
+
+/* ===== FLOW NODES ===== */
+.flow-node {
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  position: relative;
+  border: 1px solid transparent;
+}
+
+.node-trigger    { background: #1c2a1c; border-color: #3fb950; color: #7ee787; }
+.node-cpu        { background: #1a1f2e; border-color: #388bfd; color: #79c0ff; }
+.node-gpu        { background: #2a1f1a; border-color: #d29922; color: #f0c674; }
+.node-sync       { background: #2a1a2e; border-color: #bc8cff; color: #d2a8ff; }
+.node-mpi        { background: #1a2a2a; border-color: #39d353; color: #56d364; }
+.node-shm        { background: #1f2420; border-color: #3fb950; color: #56d364; }
+.node-moe        { background: #271f2a; border-color: #bc8cff; color: #d2a8ff; }
+.node-routing    { background: #2a231a; border-color: #e3b341; color: #f0c674; }
+.node-compute    { background: #1a1a2a; border-color: #388bfd; color: #79c0ff; }
+.node-event      { background: #2a1a1a; border-color: #f85149; color: #ff7b72; }
+.node-barrier    { background: #1a1f1a; border-color: #3fb950; color: #56d364; }
+.node-section    { background: transparent; border-color: #30363d; color: #8b949e; font-size: 10px; border-style: dashed; }
+
+.flow-node .node-title {
+  font-weight: bold;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+.flow-node .node-file {
+  font-size: 9px;
+  opacity: 0.65;
+  margin-top: 3px;
+}
+.flow-node .node-detail {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+/* Arrow between nodes */
+.arrow {
+  text-align: center;
+  color: #484f58;
+  font-size: 14px;
+  margin: 1px 0;
+  line-height: 1;
+}
+.arrow.sync-arrow { color: #bc8cff; font-weight: bold; }
+.arrow.data-arrow { color: #388bfd; }
+
+/* Section labels */
+.phase-label {
+  font-size: 10px;
+  color: #8b949e;
+  text-align: center;
+  padding: 4px 8px;
+  border-top: 1px dashed #21262d;
+  border-bottom: 1px dashed #21262d;
+  margin: 10px 0 8px;
+  background: #0d1117;
+  letter-spacing: 0.5px;
+}
+
+/* ===== TIMELINE SVG ===== */
+.timeline-wrapper {
+  background: #0d1117;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+  overflow: hidden;
+}
+
+svg#timeline {
+  width: 100%;
+  display: block;
+}
+
+/* Legend */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 10px;
+  background: #161b22;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #8b949e;
+}
+.legend-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<div class="page-title">TensorRT-LLM · EPLB 权重更新 & GPU 推理 · 依赖图</div>
+<div class="page-subtitle">Expert Parallelism Load Balancing — 多 Stream / 多 CPU Thread 完整流程</div>
+
+<div class="layout">
+
+  <!-- ======================================= -->
+  <!-- LEFT: Weight Update Flow                -->
+  <!-- ======================================= -->
+  <div class="panel-weight">
+    <div class="panel-header" style="background:#1c2a1c;color:#7ee787;border:1px solid #3fb950;">
+      权重更新流程 (Weight Update)
+    </div>
+
+    <div class="phase-label">Phase 0 · 触发 (外部训练进程)</div>
+
+    <div class="flow-node node-trigger">
+      <div class="node-title">训练进程调用</div>
+      <div class="node-detail">llm._collective_rpc("update_weights", ipc_handles)</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-cpu">
+      <div class="node-title">RayExecutor.collective_rpc_async()</div>
+      <div class="node-detail">广播到所有 Ray Worker</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-cpu">
+      <div class="node-title">@control_action_decorator</div>
+      <div class="node-detail">等待所有活跃推理请求完成后继续</div>
+      <div class="node-file">rlhf_utils.py · CPU Thread: Ray Worker</div>
+    </div>
+
+    <div class="phase-label">Phase 1 · 权重预处理</div>
+
+    <div class="flow-node node-cpu">
+      <div class="node-title">module.pre_reload_weights()</div>
+      <div class="node-detail">各模块清理权重缓存，准备接受新权重</div>
+      <div class="node-file">rlhf_utils.py:54-60</div>
+    </div>
+
+    <div class="phase-label">Phase 2 · IPC 权重加载</div>
+
+    <div class="flow-node node-cpu">
+      <div class="node-title">反序列化 IPC 句柄</div>
+      <div class="node-detail">base64.b64decode() → serialization.loads()</div>
+      <div class="node-file">rlhf_utils.py:61-85</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-gpu">
+      <div class="node-title">重建 GPU 张量</div>
+      <div class="node-detail">func(*args) → CUDA IPC 张量映射到当前 device</div>
+      <div class="node-file">rlhf_utils.py:86-105</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-gpu">
+      <div class="node-title">model_loader.reload(weights)</div>
+      <div class="node-detail">将新权重复制到模型参数 (CUDA memcpy)</div>
+      <div class="node-file">rlhf_utils.py:106-116</div>
+    </div>
+
+    <div class="phase-label">Phase 3 · 权重后处理 (第二次调用 ipc_handles=None)</div>
+
+    <div class="flow-node node-cpu">
+      <div class="node-title">module.process_weights_after_loading()</div>
+      <div class="node-detail">各模块权重量化/变换后处理</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-cpu">
+      <div class="node-title">module.post_load_weights()</div>
+      <div class="node-detail">完成权重加载后回调</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-moe">
+      <div class="node-title">moe_load_balancer.register_weight_slots_after_to_cuda()</div>
+      <div class="node-detail">执行所有注册的权重回调函数</div>
+      <div class="node-file">moe_load_balancer.py:962</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="phase-label">Phase 4 · MOE 负载均衡器初始化</div>
+
+    <div class="flow-node node-mpi">
+      <div class="node-title">MPI Barrier #1</div>
+      <div class="node-detail">所有 rank 创建共享内存完成后同步</div>
+      <div class="node-file">moe_load_balancer.py:969</div>
+    </div>
+    <div class="arrow sync-arrow">⟺ 等待所有 Rank</div>
+    <div class="flow-node node-shm">
+      <div class="node-title">finalize_layer_weights()</div>
+      <div class="node-detail">
+        ① 计算总 SHM 大小 (256B 对齐)<br>
+        ② SharedMemory.create(size)<br>
+        ③ 复制专家权重 → SHM buffer<br>
+        ④ 建立 frombuffer 视图
+      </div>
+      <div class="node-file">moe_load_balancer.py:259-305</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-mpi">
+      <div class="node-title">MPI Barrier #2</div>
+      <div class="node-detail">所有 rank 映射共享内存完成后同步</div>
+      <div class="node-file">moe_load_balancer.py:973</div>
+    </div>
+    <div class="arrow sync-arrow">⟺ 等待所有 Rank</div>
+    <div class="flow-node node-shm">
+      <div class="node-title">finalize_host_tensor_sharing()</div>
+      <div class="node-detail">
+        映射其他 rank 的 SHM<br>
+        建立跨 rank 权重视图
+      </div>
+      <div class="node-file">moe_load_balancer.py:310-372</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-gpu">
+      <div class="node-title">load_balancer_impl.finalize_model()</div>
+      <div class="node-detail">C++ 侧初始化，注册专家路由表</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-event">
+      <div class="node-title">torch.cuda.synchronize()</div>
+      <div class="node-detail">等待所有 CUDA 操作完成</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-shm">
+      <div class="node-title">gc / ipc_collect / empty_cache</div>
+      <div class="node-detail">清理 IPC 临时资源</div>
+    </div>
+  </div>
+
+  <!-- ======================================= -->
+  <!-- CENTER: Timeline / Stream View          -->
+  <!-- ======================================= -->
+  <div class="panel-timeline">
+    <div class="timeline-wrapper">
+      <svg id="timeline" viewBox="0 0 760 900" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background -->
+        <rect width="760" height="900" fill="#0d1117"/>
+
+        <!-- Title Row -->
+        <text x="380" y="28" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="bold" font-family="Consolas,monospace">时序依赖图 · 多 Stream & 多 CPU Thread</text>
+
+        <!-- Column Headers -->
+        <!-- Col positions: CPU=80, MainStream=240, AuxStream=400, MPI=550, SHM=690 -->
+        <rect x="10" y="40" width="130" height="26" rx="4" fill="#1a1f2e" stroke="#388bfd" stroke-width="1"/>
+        <text x="75" y="57" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="bold" font-family="Consolas,monospace">CPU Thread</text>
+        <text x="75" y="67" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">(Ray Worker / Python)</text>
+
+        <rect x="155" y="40" width="130" height="26" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="57" text-anchor="middle" fill="#f0c674" font-size="10" font-weight="bold" font-family="Consolas,monospace">CUDA Main Stream</text>
+        <text x="220" y="67" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">(default stream)</text>
+
+        <rect x="300" y="40" width="130" height="26" rx="4" fill="#1c2a2a" stroke="#39d353" stroke-width="1"/>
+        <text x="365" y="57" text-anchor="middle" fill="#56d364" font-size="10" font-weight="bold" font-family="Consolas,monospace">CUDA Aux Stream</text>
+        <text x="365" y="67" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">(moe balancer aux)</text>
+
+        <rect x="445" y="40" width="130" height="26" rx="4" fill="#1a2a1a" stroke="#3fb950" stroke-width="1"/>
+        <text x="510" y="57" text-anchor="middle" fill="#7ee787" font-size="10" font-weight="bold" font-family="Consolas,monospace">MPI Comm</text>
+        <text x="510" y="67" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">(shared_mpi_comm)</text>
+
+        <rect x="590" y="40" width="160" height="26" rx="4" fill="#1f241a" stroke="#3fb950" stroke-width="1"/>
+        <text x="670" y="57" text-anchor="middle" fill="#7ee787" font-size="10" font-weight="bold" font-family="Consolas,monospace">Shared Memory</text>
+        <text x="670" y="57" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace"></text>
+
+        <!-- Vertical lane lines -->
+        <line x1="75" y1="70" x2="75" y2="895" stroke="#1c2535" stroke-width="1" stroke-dasharray="4,4"/>
+        <line x1="220" y1="70" x2="220" y2="895" stroke="#2a1f0a" stroke-width="1" stroke-dasharray="4,4"/>
+        <line x1="365" y1="70" x2="365" y2="895" stroke="#0a2a1a" stroke-width="1" stroke-dasharray="4,4"/>
+        <line x1="510" y1="70" x2="510" y2="895" stroke="#0a2a0a" stroke-width="1" stroke-dasharray="4,4"/>
+        <line x1="670" y1="70" x2="670" y2="895" stroke="#0a2a0a" stroke-width="1" stroke-dasharray="4,4"/>
+
+        <!-- ============================================ -->
+        <!-- WEIGHT UPDATE PHASE (top half: y=80..420)   -->
+        <!-- ============================================ -->
+        <rect x="5" y="78" width="750" height="18" rx="2" fill="#1c2a1c" opacity="0.4"/>
+        <text x="380" y="91" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold" font-family="Consolas,monospace">── WEIGHT UPDATE PHASE ──</text>
+
+        <!-- 1. CPU: control_action_decorator -->
+        <rect x="12" y="100" width="126" height="30" rx="4" fill="#1a1f2e" stroke="#388bfd" stroke-width="1"/>
+        <text x="75" y="114" text-anchor="middle" fill="#79c0ff" font-size="9" font-family="Consolas,monospace">control_action</text>
+        <text x="75" y="125" text-anchor="middle" fill="#79c0ff" font-size="9" font-family="Consolas,monospace">_decorator</text>
+
+        <!-- 2. CPU: pre_reload_weights -->
+        <rect x="12" y="142" width="126" height="28" rx="4" fill="#1a1f2e" stroke="#388bfd" stroke-width="1"/>
+        <text x="75" y="160" text-anchor="middle" fill="#79c0ff" font-size="9" font-family="Consolas,monospace">pre_reload_weights()</text>
+
+        <!-- 3. CPU→GPU: IPC tensor reconstruction -->
+        <rect x="12" y="182" width="126" height="28" rx="4" fill="#1a1f2e" stroke="#388bfd" stroke-width="1"/>
+        <text x="75" y="196" text-anchor="middle" fill="#79c0ff" font-size="9" font-family="Consolas,monospace">IPC 句柄反序列化</text>
+        <text x="75" y="207" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">base64 + pickle</text>
+
+        <!-- GPU: CUDA IPC map -->
+        <rect x="157" y="182" width="126" height="28" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="196" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">CUDA IPC 张量映射</text>
+        <text x="220" y="207" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">cudaIpcOpenMemHandle</text>
+        <!-- Arrow CPU → GPU -->
+        <line x1="138" y1="196" x2="155" y2="196" stroke="#388bfd" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+
+        <!-- GPU: memcpy -->
+        <rect x="157" y="222" width="126" height="28" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="236" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">model_loader.reload()</text>
+        <text x="220" y="247" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">CUDA D2D memcpy</text>
+
+        <!-- 4. CPU: process_weights_after_loading -->
+        <rect x="12" y="263" width="126" height="28" rx="4" fill="#1a1f2e" stroke="#388bfd" stroke-width="1"/>
+        <text x="75" y="275" text-anchor="middle" fill="#79c0ff" font-size="9" font-family="Consolas,monospace">process_weights</text>
+        <text x="75" y="286" text-anchor="middle" fill="#79c0ff" font-size="9" font-family="Consolas,monospace">_after_loading()</text>
+
+        <!-- 5. CPU: register MOE slots -->
+        <rect x="12" y="303" width="126" height="28" rx="4" fill="#271f2a" stroke="#bc8cff" stroke-width="1"/>
+        <text x="75" y="315" text-anchor="middle" fill="#d2a8ff" font-size="9" font-family="Consolas,monospace">register_weight</text>
+        <text x="75" y="326" text-anchor="middle" fill="#d2a8ff" font-size="9" font-family="Consolas,monospace">_slots_after_to_cuda()</text>
+
+        <!-- MPI Barrier 1 - horizontal sync line -->
+        <rect x="5" y="343" width="750" height="16" rx="2" fill="#1a2a1a" opacity="0.5"/>
+        <text x="380" y="355" text-anchor="middle" fill="#56d364" font-size="9" font-weight="bold" font-family="Consolas,monospace">⟺  MPI Barrier #1 — 所有 Rank 创建共享内存完成  ⟺</text>
+
+        <!-- SHM: finalize_layer_weights -->
+        <rect x="592" y="370" width="158" height="40" rx="4" fill="#1f241a" stroke="#3fb950" stroke-width="1"/>
+        <text x="671" y="385" text-anchor="middle" fill="#7ee787" font-size="9" font-family="Consolas,monospace">finalize_layer_weights()</text>
+        <text x="671" y="396" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">SHM.create + memcpy</text>
+        <text x="671" y="406" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">256B 对齐</text>
+        <!-- CPU → SHM arrow -->
+        <line x1="138" y1="315" x2="590" y2="380" stroke="#3fb950" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrowGreen)"/>
+
+        <!-- MPI Barrier 2 -->
+        <rect x="5" y="422" width="750" height="16" rx="2" fill="#1a2a1a" opacity="0.5"/>
+        <text x="380" y="434" text-anchor="middle" fill="#56d364" font-size="9" font-weight="bold" font-family="Consolas,monospace">⟺  MPI Barrier #2 — 所有 Rank 映射共享内存完成  ⟺</text>
+
+        <!-- SHM: finalize_host_tensor_sharing -->
+        <rect x="592" y="450" width="158" height="30" rx="4" fill="#1f241a" stroke="#3fb950" stroke-width="1"/>
+        <text x="671" y="463" text-anchor="middle" fill="#7ee787" font-size="9" font-family="Consolas,monospace">finalize_host_tensor</text>
+        <text x="671" y="474" text-anchor="middle" fill="#7ee787" font-size="9" font-family="Consolas,monospace">_sharing() 跨 rank 映射</text>
+
+        <!-- cuda.synchronize -->
+        <rect x="12" y="450" width="126" height="28" rx="4" fill="#2a1a1a" stroke="#f85149" stroke-width="1"/>
+        <text x="75" y="462" text-anchor="middle" fill="#ff7b72" font-size="9" font-family="Consolas,monospace">cuda.synchronize()</text>
+        <text x="75" y="473" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">等待所有 CUDA 完成</text>
+
+        <!-- ============================================ -->
+        <!-- INFERENCE PHASE (bottom half: y=495..895)   -->
+        <!-- ============================================ -->
+        <rect x="5" y="493" width="750" height="18" rx="2" fill="#1a2a2a" opacity="0.4"/>
+        <text x="380" y="506" text-anchor="middle" fill="#39d353" font-size="10" font-weight="bold" font-family="Consolas,monospace">── GPU INFERENCE PHASE (per iteration) ──</text>
+
+        <!-- CPU: MoeLoadBalancerIterContext.__enter__ -->
+        <rect x="12" y="515" width="126" height="30" rx="4" fill="#271f2a" stroke="#bc8cff" stroke-width="1"/>
+        <text x="75" y="529" text-anchor="middle" fill="#d2a8ff" font-size="9" font-family="Consolas,monospace">IterContext.__enter__</text>
+        <text x="75" y="540" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">start_iter()</text>
+
+        <!-- Main: start_wait_gpu_stage event record -->
+        <rect x="157" y="515" width="126" height="30" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="529" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">Event[Main].record()</text>
+        <text x="220" y="540" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">start_wait_gpu_stage</text>
+        <!-- CPU → Main arrow -->
+        <line x1="138" y1="530" x2="155" y2="530" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
+
+        <!-- Aux: wait Main event -->
+        <rect x="302" y="515" width="126" height="30" rx="4" fill="#1c2a2a" stroke="#39d353" stroke-width="1"/>
+        <text x="365" y="529" text-anchor="middle" fill="#56d364" font-size="9" font-family="Consolas,monospace">Event[Main].wait()</text>
+        <text x="365" y="540" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">辅助流等待主流</text>
+        <!-- Main → Aux event arrow -->
+        <line x1="283" y1="530" x2="300" y2="530" stroke="#d29922" stroke-width="1.5" marker-end="url(#arrowYellow)"/>
+
+        <!-- Aux: moe_load_balance_wait_gpu_stage -->
+        <rect x="302" y="557" width="126" height="30" rx="4" fill="#1c2a2a" stroke="#39d353" stroke-width="1"/>
+        <text x="365" y="571" text-anchor="middle" fill="#56d364" font-size="9" font-family="Consolas,monospace">wait_gpu_stage</text>
+        <text x="365" y="582" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">C++ CUDA kernel</text>
+
+        <!-- Main: routing -->
+        <rect x="157" y="557" width="126" height="30" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="571" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">routing_method.apply()</text>
+        <text x="220" y="582" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">TopK router logits</text>
+
+        <!-- Aux: Event[MoeBalancer].record -->
+        <rect x="302" y="599" width="126" height="24" rx="4" fill="#1c2a2a" stroke="#39d353" stroke-width="1"/>
+        <text x="365" y="615" text-anchor="middle" fill="#56d364" font-size="9" font-family="Consolas,monospace">Event[MoeBalancer].record()</text>
+
+        <!-- Main: done_wait_gpu_stage: wait Aux -->
+        <rect x="157" y="599" width="126" height="30" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="613" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">Event[MoeBalancer].wait()</text>
+        <text x="220" y="624" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">主流等待辅助流完成</text>
+        <!-- Aux → Main event -->
+        <line x1="302" y1="611" x2="283" y2="611" stroke="#39d353" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowYellow)"/>
+
+        <!-- Main: statistic + routing -->
+        <rect x="157" y="641" width="126" height="40" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="655" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">moe_lb_statistic()</text>
+        <text x="220" y="666" text-anchor="middle" fill="#e3b341" font-size="9" font-family="Consolas,monospace">moe_lb_routing()</text>
+        <text x="220" y="677" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">slot_ids = f(expert_ids)</text>
+
+        <!-- Main: comm.dispatch -->
+        <rect x="157" y="693" width="126" height="28" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="707" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">comm.dispatch()</text>
+        <text x="220" y="718" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">AlltoAll / EP Scatter</text>
+
+        <!-- Main: run_moe -->
+        <rect x="157" y="733" width="126" height="28" rx="4" fill="#1a1a2a" stroke="#388bfd" stroke-width="1.5"/>
+        <text x="220" y="747" text-anchor="middle" fill="#79c0ff" font-size="9" font-family="Consolas,monospace" font-weight="bold">backend.run_moe()</text>
+        <text x="220" y="758" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">GEMM + SiLU + GEMM</text>
+
+        <!-- Main: start_set_cpu_stage event record -->
+        <rect x="157" y="773" width="126" height="24" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="789" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">Event[Main].record()</text>
+
+        <!-- Aux: wait Main & set_cpu_stage -->
+        <rect x="302" y="773" width="126" height="40" rx="4" fill="#1c2a2a" stroke="#39d353" stroke-width="1"/>
+        <text x="365" y="787" text-anchor="middle" fill="#56d364" font-size="9" font-family="Consolas,monospace">Event[Main].wait()</text>
+        <text x="365" y="798" text-anchor="middle" fill="#56d364" font-size="9" font-family="Consolas,monospace">set_cpu_stage()</text>
+        <text x="365" y="809" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">C++ 重配专家路由</text>
+        <!-- Main → Aux -->
+        <line x1="283" y1="785" x2="300" y2="785" stroke="#d29922" stroke-width="1.5" marker-end="url(#arrowYellow)"/>
+
+        <!-- Aux: Event[MoeBalancer].record -->
+        <rect x="302" y="824" width="126" height="22" rx="4" fill="#1c2a2a" stroke="#39d353" stroke-width="1"/>
+        <text x="365" y="839" text-anchor="middle" fill="#56d364" font-size="9" font-family="Consolas,monospace">Event[MoeBalancer].record()</text>
+
+        <!-- Main: comm.combine -->
+        <rect x="157" y="809" width="126" height="28" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="823" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">comm.combine()</text>
+        <text x="220" y="834" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">AlltoAll / EP Gather</text>
+
+        <!-- Main: done_set_cpu_stage -->
+        <rect x="157" y="849" width="126" height="28" rx="4" fill="#2a1f1a" stroke="#d29922" stroke-width="1"/>
+        <text x="220" y="863" text-anchor="middle" fill="#f0c674" font-size="9" font-family="Consolas,monospace">Event[MoeBalancer].wait()</text>
+        <text x="220" y="874" text-anchor="middle" fill="#484f58" font-size="8" font-family="Consolas,monospace">done_set_cpu_stage</text>
+        <!-- Aux → Main -->
+        <line x1="302" y1="835" x2="283" y2="858" stroke="#39d353" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowYellow)"/>
+
+        <!-- CPU: end_iter -->
+        <rect x="12" y="869" width="126" height="24" rx="4" fill="#271f2a" stroke="#bc8cff" stroke-width="1"/>
+        <text x="75" y="885" text-anchor="middle" fill="#d2a8ff" font-size="9" font-family="Consolas,monospace">IterContext.__exit__ / end_iter()</text>
+        <!-- Main → CPU -->
+        <line x1="138" y1="881" x2="155" y2="862" stroke="#bc8cff" stroke-width="1" stroke-dasharray="3,3"/>
+
+        <!-- Vertical flow arrows (CPU column) -->
+        <line x1="75" y1="130" x2="75" y2="142" stroke="#388bfd" stroke-width="1" marker-end="url(#arrowBlue)"/>
+        <line x1="75" y1="170" x2="75" y2="182" stroke="#388bfd" stroke-width="1" marker-end="url(#arrowBlue)"/>
+        <line x1="75" y1="210" x2="75" y2="263" stroke="#388bfd" stroke-width="1" stroke-dasharray="2,2" marker-end="url(#arrowBlue)"/>
+        <line x1="75" y1="291" x2="75" y2="303" stroke="#388bfd" stroke-width="1" marker-end="url(#arrowBlue)"/>
+
+        <!-- Vertical flow arrows (Main stream column) -->
+        <line x1="220" y1="210" x2="220" y2="222" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="250" x2="220" y2="557" stroke="#d29922" stroke-width="1" stroke-dasharray="2,2" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="587" x2="220" y2="599" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="629" x2="220" y2="641" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="681" x2="220" y2="693" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="721" x2="220" y2="733" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="761" x2="220" y2="773" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="797" x2="220" y2="809" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+        <line x1="220" y1="837" x2="220" y2="849" stroke="#d29922" stroke-width="1" marker-end="url(#arrowYellow)"/>
+
+        <!-- Vertical flow arrows (Aux stream column) -->
+        <line x1="365" y1="545" x2="365" y2="557" stroke="#39d353" stroke-width="1" marker-end="url(#arrowGreen)"/>
+        <line x1="365" y1="587" x2="365" y2="599" stroke="#39d353" stroke-width="1" marker-end="url(#arrowGreen)"/>
+        <line x1="365" y1="623" x2="365" y2="773" stroke="#39d353" stroke-width="1" stroke-dasharray="2,2" marker-end="url(#arrowGreen)"/>
+        <line x1="365" y1="813" x2="365" y2="824" stroke="#39d353" stroke-width="1" marker-end="url(#arrowGreen)"/>
+
+        <!-- Arrow definitions -->
+        <defs>
+          <marker id="arrowBlue" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#388bfd"/>
+          </marker>
+          <marker id="arrowYellow" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#d29922"/>
+          </marker>
+          <marker id="arrowGreen" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#39d353"/>
+          </marker>
+          <marker id="arrowPurple" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#bc8cff"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#1a1f2e;border:1px solid #388bfd"></div>CPU / Python 操作</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#2a1f1a;border:1px solid #d29922"></div>CUDA Main Stream</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#1c2a2a;border:1px solid #39d353"></div>CUDA Aux Stream</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#1a2a1a;border:1px solid #3fb950"></div>MPI 同步屏障</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#1f241a;border:1px solid #3fb950"></div>共享内存 (SHM)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#271f2a;border:1px solid #bc8cff"></div>MOE 负载均衡器</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#1a1a2a;border:1px solid #388bfd"></div>GPU Compute Core</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#2a1a1a;border:1px solid #f85149"></div>CUDA 同步点</div>
+      <div class="legend-item">
+        <svg width="30" height="10"><line x1="0" y1="5" x2="25" y2="5" stroke="#d29922" stroke-width="1.5" marker-end="url(#arrowYellow2)"/>
+        <defs><marker id="arrowYellow2" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L0,5 L5,2.5 z" fill="#d29922"/></marker></defs></svg>
+        实线 = 数据/控制流
+      </div>
+      <div class="legend-item">
+        <svg width="30" height="10"><line x1="0" y1="5" x2="25" y2="5" stroke="#39d353" stroke-width="1.5" stroke-dasharray="4,2"/></svg>
+        虚线 = Event 同步
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================= -->
+  <!-- RIGHT: GPU Inference Flow               -->
+  <!-- ======================================= -->
+  <div class="panel-inference">
+    <div class="panel-header" style="background:#1a2a2a;color:#56d364;border:1px solid #39d353;">
+      GPU 推理流程 (per-iteration)
+    </div>
+
+    <div class="phase-label">入口：model_engine.forward()</div>
+
+    <div class="flow-node node-moe">
+      <div class="node-title">MoeLoadBalancerIterContext</div>
+      <div class="node-detail">__enter__ → moe_load_balancer.start_iter()</div>
+      <div class="node-file">model_engine.py:3504 / moe_load_balancer.py:1115</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-gpu">
+      <div class="node-title">_forward_step() → _forward_chunk_impl()</div>
+      <div class="node-detail">逐 layer 执行 MOE forward</div>
+      <div class="node-file">configurable_moe.py:544</div>
+    </div>
+
+    <div class="phase-label">Step 1 · GPU Stage 等待</div>
+
+    <div class="flow-node node-event">
+      <div class="node-title">_load_balancer_start_wait_gpu_stage()</div>
+      <div class="node-detail">
+        Main: Event[Main].record()<br>
+        Aux:  Event[Main].wait()<br>
+        Aux:  moe_load_balance_wait_gpu_stage()<br>
+        Aux:  Event[MoeBalancer].record()
+      </div>
+      <div class="node-file">moe_load_balancer.py:594-611</div>
+    </div>
+
+    <div class="phase-label">Step 2 · 专家路由</div>
+
+    <div class="flow-node node-routing">
+      <div class="node-title">routing_method.apply(router_logits)</div>
+      <div class="node-detail">TopK softmax → token_selected_experts</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-event">
+      <div class="node-title">done_wait_gpu_stage()</div>
+      <div class="node-detail">Main: Event[MoeBalancer].wait() — 等待辅助流完成</div>
+      <div class="node-file">moe_load_balancer.py:613-621</div>
+    </div>
+
+    <div class="phase-label">Step 3 · 统计 & 路由转换</div>
+
+    <div class="flow-node node-moe">
+      <div class="node-title">_load_balancer_update_statistic()</div>
+      <div class="node-detail">moe_load_balance_statistic() — 记录专家负载分布</div>
+      <div class="node-file">configurable_moe.py:600</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-routing">
+      <div class="node-title">_load_balancer_route(token_selected_experts)</div>
+      <div class="node-detail">moe_load_balance_routing() — 将 expert_id 转换为 slot_id</div>
+      <div class="node-file">configurable_moe.py:620</div>
+    </div>
+
+    <div class="phase-label">Step 4 · EP 通信 Dispatch</div>
+
+    <div class="flow-node node-gpu">
+      <div class="node-title">comm.dispatch()</div>
+      <div class="node-detail">AlltoAll — 按专家分发 token 到各 GPU</div>
+    </div>
+
+    <div class="phase-label">Step 5 · MOE 计算</div>
+
+    <div class="flow-node node-compute">
+      <div class="node-title">backend.run_moe(x, token_selected_slots, ...)</div>
+      <div class="node-detail">
+        W1 GEMM (Gate) → SiLU → W3 GEMM → W2 GEMM<br>
+        使用 slot_id 索引专家权重
+      </div>
+      <div class="node-file">configurable_moe.py:700+</div>
+    </div>
+
+    <div class="phase-label">Step 6 · CPU Stage (权重预调度)</div>
+
+    <div class="flow-node node-event">
+      <div class="node-title">_load_balancer_start_set_cpu_stage()</div>
+      <div class="node-detail">
+        Main: Event[Main].record()<br>
+        Aux:  Event[Main].wait()<br>
+        Aux:  moe_load_balance_set_cpu_stage()<br>
+            → C++侧重配专家路由表<br>
+        Aux:  Event[MoeBalancer].record()
+      </div>
+      <div class="node-file">moe_load_balancer.py:623-641</div>
+    </div>
+
+    <div class="phase-label">Step 7 · EP 通信 Combine</div>
+
+    <div class="flow-node node-gpu">
+      <div class="node-title">comm.combine()</div>
+      <div class="node-detail">AlltoAll — 聚合各 GPU 专家输出</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-node node-event">
+      <div class="node-title">done_set_cpu_stage()</div>
+      <div class="node-detail">Main: Event[MoeBalancer].wait() — 确认 CPU 重配完成</div>
+      <div class="node-file">moe_load_balancer.py:643-653</div>
+    </div>
+
+    <div class="phase-label">迭代结束</div>
+
+    <div class="flow-node node-moe">
+      <div class="node-title">IterContext.__exit__</div>
+      <div class="node-detail">moe_load_balancer.end_iter() — 更新统计，触发下轮负载均衡决策</div>
+      <div class="node-file">moe_load_balancer.py:1148</div>
+    </div>
+
+    <div class="phase-label">关键数据流</div>
+
+    <div class="flow-node node-section">
+      <div class="node-title">路由表 (per-layer)</div>
+      <div class="node-detail">
+        global_expert_id → local_slot_id<br>
+        由 C++ load_balancer_impl 维护<br>
+        set_initial_weight_assignments() 初始化<br>
+        set_cpu_stage() 每轮更新
+      </div>
+    </div>
+
+    <div class="flow-node node-section">
+      <div class="node-title">共享内存权重 (cross-rank)</div>
+      <div class="node-detail">
+        HostMoeTensorSharer 管理<br>
+        expert_start = rank * N // total<br>
+        256B 对齐 POSIX SHM<br>
+        frombuffer() 零复制视图
+      </div>
+    </div>
+
+    <div class="flow-node node-section">
+      <div class="node-title">CUDA Event 对</div>
+      <div class="node-detail">
+        EventType.Main → 主流位置标记<br>
+        EventType.MoeBalancer → 辅助流完成标记<br>
+        成对使用实现双向同步
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
